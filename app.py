@@ -100,7 +100,6 @@ default_params = {
 
 tab1, tab2, tab3 = st.tabs(["📊 投资组合", "🧠 个股诊断", "⚙️ 设置"])
 
-# Tab 1
 with tab1:
     valid_tickers = [t for t in engine.portfolio['YF_Ticker'].unique() if t in engine.market_data]
     global_strategy = st.sidebar.selectbox("备用策略", ["SMA Cross", "SMA Reversal", "RSI", "Bollinger"], index=0)
@@ -149,7 +148,6 @@ with tab1:
         if count > 0: st.success(f"已推 {count} 条")
         else: st.info("无信号")
 
-# Tab 2
 with tab2:
     c_sel, c_det = st.columns([1, 3])
     with c_sel:
@@ -192,7 +190,6 @@ with tab2:
                 fig.update_layout(height=400, margin=dict(l=10,r=10,t=10,b=10))
                 st.plotly_chart(fig, use_container_width=True)
 
-# Tab 3
 with tab3:
     if st.button("🧹 清除缓存"):
         st.cache_data.clear()
