@@ -4,13 +4,10 @@ import plotly.graph_objects as go
 import os
 from quant_engine import QuantEngine
 
-# --- 页面配置 ---
-st.set_page_config(page_title="智能量化系统", layout="wide", page_icon="🧠")
+st.set_page_config(page_title="智能量化系统 Pro", layout="wide", page_icon="🧠")
 
-# --- 初始化 ---
 engine = QuantEngine()
 
-# --- 侧边栏 ---
 st.sidebar.header("📂 数据中心")
 default_file = "holdings.csv"
 csv_source = None
@@ -32,44 +29,71 @@ engine.load_portfolio(csv_source)
 def get_market_data_cached(_engine_trigger):
     return engine.fetch_data_automatically()
 
-with st.spinner("正在分析全球市场数据..."):
+with st.spinner("正在进行全维市场扫描..."):
     status = engine.fetch_data_automatically()
 
-# --- ⚠️ 纳指生命周期雷达 (NEW) ---
-with st.expander("📡 纳指全景监控雷达 (Nasdaq Market Cycle)", expanded=True):
-    risk_data = engine.analyze_nasdaq_crash_risk()
+# ==========================================
+# 🛡️ 纳指专业级市场状态分析 (Pro Dashboard)
+# ==========================================
+with st.expander("🛡️ 纳斯达克全维战态感知 (Nasdaq Pro Analysis)", expanded=True):
+    nasdaq_pro = engine.analyze_nasdaq_pro()
     
-    if risk_data:
-        # 这里的 Key 必须与 quant_engine.py 返回的字典一致 ('Phase')
-        phase = risk_data['Phase'] 
-        bg_color = "#f0f2f6"
-        if "上涨" in phase: bg_color = "#d1e7dd"
-        elif "恐慌" in phase or "熊市" in phase: bg_color = "#f8d7da"
-        elif "修复" in phase or "过热" in phase: bg_color = "#fff3cd"
-
+    if nasdaq_pro:
+        # 1. 状态标头
+        state = nasdaq_pro['State']
+        score = nasdaq_pro['Score']
+        
+        # 配色逻辑
+        state_colors = {
+            "Strong Bull": "#d4edda", "Healthy Uptrend": "#d1e7dd",
+            "Overheated": "#fff3cd", "Shallow Pullback": "#cfe2ff",
+            "Deep Pullback": "#ffe69c", "Repairing": "#e2e3e5",
+            "Choppy": "#f8f9fa", "Bear Market": "#f8d7da",
+            "Panic": "#f5c6cb"
+        }
+        bg = state_colors.get(state, "#f8f9fa")
+        
         st.markdown(f"""
-        <div style="background-color: {bg_color}; padding: 15px; border-radius: 10px; margin-bottom: 15px;">
-            <h3 style="margin:0; color: #333;">{phase}</h3>
-            <p style="margin:5px 0 0 0; color: #555;">{risk_data['Description']}</p>
+        <div style="background-color: {bg}; padding: 20px; border-radius: 12px; border-left: 8px solid #666;">
+            <h2 style="margin:0; color: #333;">{state} <span style="font-size: 16px; color: #555;">(健康评分: {score}/100)</span></h2>
         </div>
         """, unsafe_allow_html=True)
+        
+        st.write("") # Spacer
 
+        # 2. 核心四维数据
         c1, c2, c3, c4 = st.columns(4)
+        m = nasdaq_pro['Metrics']
         
         with c1:
-            st.metric("纳指现价", f"${risk_data['Price']:.2f}", f"{risk_data['DD_ATH']:.2f}% (距高点)")
+            st.caption("📈 趋势 (Trend)")
+            st.metric("方向 / 强度", f"{nasdaq_pro['Trend_Dir']} / {nasdaq_pro['Trend_Str']}")
+            st.metric("ADX 强度", f"{m['ADX']:.1f}", help=">25 为强趋势")
+        
         with c2:
-            st.metric("恐慌指数 (VXN)", f"{risk_data['VXN']:.2f}", help=">30 极度恐慌, <15 贪婪")
-        with c3:
-            st.metric("RSI (14)", f"{risk_data['RSI']:.1f}", help=">70 超买, <30 超卖")
-        with c4:
-            tnx_val = f"{risk_data['TNX']:.2f}%" if risk_data['TNX'] > 0 else "N/A"
-            st.metric("10年美债收益率", tnx_val, help="收益率飙升通常利空科技股")
+            st.caption("🌊 波动 (Risk)")
+            st.metric("波动率状态", nasdaq_pro['Volatility'])
+            st.metric("恐慌指数 VXN", f"{m['VXN']:.1f}", delta=None, help="纳指波动率")
             
-        st.caption(f"📊 长期均线乖离率: {risk_data['SMA200_Bias']:.1f}% (正值代表在年线上方，负值代表破位)")
+        with c3:
+            st.caption("🏗️ 结构 (Health)")
+            st.metric("市场宽度", nasdaq_pro['Breadth'], help="对比等权指数与加权指数")
+            st.metric("资金流 RSI", f"{m['RSI']:.1f}")
+            
+        with c4:
+            st.caption("⚠️ 风险预测 (Prob)")
+            st.metric("短期回撤概率", f"{nasdaq_pro['Risk_Short']}%", help="1-5天风险")
+            st.metric("中期崩盘概率", f"{nasdaq_pro['Risk_Med']}%", help="1-4周风险")
+            
+        # 3. 关键信号汇总
+        if nasdaq_pro['Signals']:
+            st.markdown("---")
+            st.caption("📢 **关键情报 (Key Signals)**")
+            for sig in nasdaq_pro['Signals']:
+                st.write(sig)
+                
     else:
-        st.info("正在获取纳指数据，请稍候... (如果长时间未显示，请尝试清除缓存)")
-
+        st.warning("无法获取纳指全维数据，请检查网络或清除缓存重试。")
 
 # --- 默认参数 ---
 default_params = {
@@ -80,14 +104,12 @@ default_params = {
 }
 
 # --- 布局 ---
-tab1, tab2, tab3 = st.tabs(["📊 投资组合全览", "🧠 动态智能分析 (AI)", "⚙️ 设置"])
+tab1, tab2, tab3 = st.tabs(["📊 投资组合", "🧠 个股诊断", "⚙️ 设置"])
 
-# ==========================
-# Tab 1: 投资组合全览
-# ==========================
+# Tab 1: 投资组合 (保持简洁)
 with tab1:
     valid_tickers = [t for t in engine.portfolio['YF_Ticker'].unique() if t in engine.market_data]
-    global_strategy = st.sidebar.selectbox("默认备用策略", ["SMA Cross", "SMA Reversal", "RSI", "Bollinger"], index=0)
+    global_strategy = st.sidebar.selectbox("备用策略", ["SMA Cross", "SMA Reversal", "RSI", "Bollinger"], index=0)
     
     dashboard_data = []
     for ticker in valid_tickers:
@@ -107,11 +129,11 @@ with tab1:
         row_info = engine.portfolio[engine.portfolio['YF_Ticker'] == ticker].iloc[0]
         dashboard_data.append({
             "代码": row_info['Symbol'],
-            "当前价格": f"${price:.2f}",
-            "当前模型": active_strat,
+            "价格": f"${price:.2f}",
+            "模型": active_strat,
             "信号": signal_status,
-            "状态": health,
-            "YF代码": ticker
+            "健康度": health,
+            "YF": ticker
         })
     
     df_dash = pd.DataFrame(dashboard_data)
@@ -121,96 +143,63 @@ with tab1:
         if "⚠️" in str(val): return 'color: orange; font-weight: bold'
         return ''
 
-    st.dataframe(
-        df_dash.style.map(style_dashboard),
-        use_container_width=True,
-        column_config={"YF代码": None}
-    )
+    st.dataframe(df_dash.style.map(style_dashboard), use_container_width=True, column_config={"YF": None})
     
     if st.button("🚀 推送信号"):
         count = 0
         for idx, item in enumerate(dashboard_data):
             if "BUY" in item['信号'] or "SELL" in item['信号']:
                 from quant_engine import send_telegram_message
-                msg = f"🚨 *{item['信号']}*\nCode: `{item['代码']}`\nModel: {item['当前模型']}"
-                send_telegram_message(msg)
+                send_telegram_message(f"🚨 *{item['信号']}*\n{item['代码']}")
                 count += 1
-        if count > 0: st.success(f"推送了 {count} 条信号")
+        if count > 0: st.success(f"已推 {count} 条")
         else: st.info("无信号")
 
-# ==========================
-# Tab 2: 动态智能分析
-# ==========================
+# Tab 2: 个股诊断
 with tab2:
-    col_sel, col_detail = st.columns([1, 3])
-    
-    with col_sel:
-        st.subheader("个股诊断")
-        selected_asset = st.radio("选择资产", [d['代码'] for d in dashboard_data])
-        sel_yf = df_dash[df_dash['代码'] == selected_asset]['YF代码'].iloc[0]
-        
-    with col_detail:
+    c_sel, c_det = st.columns([1, 3])
+    with c_sel:
+        sel_asset = st.radio("资产", [d['代码'] for d in dashboard_data])
+        sel_yf = df_dash[df_dash['代码'] == sel_asset]['YF'].iloc[0]
+    with c_det:
         if sel_yf:
-            regime = engine.analyze_market_regime(sel_yf)
-            
-            if regime:
-                st.markdown(f"### 📊 {selected_asset} 市场体检报告")
-                
+            reg = engine.analyze_market_regime(sel_yf)
+            if reg:
+                st.markdown(f"### {sel_asset} 分析")
                 c1, c2, c3 = st.columns(3)
-                c1.metric("近1月状态", regime['1M']['Desc'], f"{regime['1M']['Val']*100:.1f}%")
-                c2.metric("近半年状态", regime['6M']['Desc'], f"{regime['6M']['Val']*100:.1f}%")
-                c3.metric("近1年状态",  regime['1Y']['Desc'], f"{regime['1Y']['Val']*100:.1f}%")
+                c1.metric("1月", reg['1M']['Desc'], f"{reg['1M']['Val']*100:.1f}%")
+                c2.metric("半年", reg['6M']['Desc'], f"{reg['6M']['Val']*100:.1f}%")
+                c3.metric("1年", reg['1Y']['Desc'], f"{reg['1Y']['Val']*100:.1f}%")
+                st.info(f"AI 建议: **{reg['Recommendation']}** (ADX: {reg['ADX']:.1f})")
                 
-                st.info(f"💡 **AI 综合建议**：当前市场波动率 {regime['Volatility']:.1f}%，ADX {regime['ADX']:.1f}。推荐使用 **{regime['Recommendation']}** 模型。")
-
                 st.divider()
-                st.markdown("#### 🛠️ 策略沙盒")
-                
-                current_fixed = engine.get_active_strategy(sel_yf, "无 (跟随默认)")
-                
-                col_setting, col_btn = st.columns([2, 1])
-                with col_setting:
-                    try:
-                        idx = ["SMA Cross", "SMA Reversal", "RSI", "Bollinger"].index(regime['Recommendation'])
+                col_s, col_b = st.columns([2,1])
+                with col_s:
+                    try: idx = ["SMA Cross", "SMA Reversal", "RSI", "Bollinger"].index(reg['Recommendation'])
                     except: idx = 0
-                    preview_strat = st.selectbox("预览模型效果", ["SMA Cross", "SMA Reversal", "RSI", "Bollinger"], index=idx)
-                
-                with col_btn:
+                    p_strat = st.selectbox("模型预览", ["SMA Cross", "SMA Reversal", "RSI", "Bollinger"], index=idx)
+                with col_b:
                     st.write("")
                     st.write("")
-                    if st.button(f"🔒 锁定为: {preview_strat}"):
-                        engine.save_strategy_config(sel_yf, preview_strat)
-                        st.toast(f"已锁定 {selected_asset} 为 {preview_strat}", icon="✅")
-                        st.rerun()
+                    if st.button(f"🔒 锁定 {p_strat}"):
+                        engine.save_strategy_config(sel_yf, p_strat)
+                        st.experimental_rerun()
 
-                if current_fixed in ["SMA Cross", "SMA Reversal", "RSI", "Bollinger"]:
-                    st.success(f"当前已锁定策略: **{current_fixed}**")
-                else:
-                    st.caption("当前使用全局默认策略")
-
-                df_chart = engine.calculate_strategy(sel_yf, preview_strat, default_params.get(preview_strat, {}))
+                df_c = engine.calculate_strategy(sel_yf, p_strat, default_params.get(p_strat, {}))
                 fig = go.Figure()
-                fig.add_trace(go.Candlestick(x=df_chart.index, open=df_chart['Open'], high=df_chart['High'], low=df_chart['Low'], close=df_chart['Close'], name='K线'))
+                fig.add_trace(go.Candlestick(x=df_c.index, open=df_c['Open'], high=df_c['High'], low=df_c['Low'], close=df_c['Close'], name='K'))
+                if "SMA" in p_strat:
+                    fig.add_trace(go.Scatter(x=df_c.index, y=df_c['SMA_S'], line=dict(color='orange'), name='S'))
+                    fig.add_trace(go.Scatter(x=df_c.index, y=df_c['SMA_L'], line=dict(color='blue'), name='L'))
                 
-                if "SMA" in preview_strat:
-                    fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SMA_S'], line=dict(color='orange'), name='Short'))
-                    fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SMA_L'], line=dict(color='blue'), name='Long'))
-                
-                buys = df_chart[df_chart['Signal'] == 1]
-                sells = df_chart[df_chart['Signal'] == -1]
-                fig.add_trace(go.Scatter(x=buys.index, y=buys['Close'], mode='markers', marker=dict(symbol='triangle-up', size=12, color='green'), name='Buy'))
-                fig.add_trace(go.Scatter(x=sells.index, y=sells['Close'], mode='markers', marker=dict(symbol='triangle-down', size=12, color='red'), name='Sell'))
-                
-                fig.update_layout(height=500, margin=dict(l=20, r=20, t=20, b=20))
+                bs = df_c[df_c['Signal']==1]; ss = df_c[df_c['Signal']==-1]
+                fig.add_trace(go.Scatter(x=bs.index, y=bs['Close'], mode='markers', marker=dict(symbol='triangle-up', size=10, color='green'), name='B'))
+                fig.add_trace(go.Scatter(x=ss.index, y=ss['Close'], mode='markers', marker=dict(symbol='triangle-down', size=10, color='red'), name='S'))
+                fig.update_layout(height=400, margin=dict(l=10,r=10,t=10,b=10))
                 st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.warning("数据不足，无法分析。")
 
-# ==========================
-# Tab 3: 设置
-# ==========================
+# Tab 3
 with tab3:
-    st.write("系统工具")
     if st.button("🧹 清除缓存"):
         st.cache_data.clear()
-        st.success("已清除")
+        st.success("OK")
