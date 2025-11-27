@@ -13,7 +13,8 @@ def send_telegram_message(message):
         bot_token = st.secrets["BOT_TOKEN"]
         chat_id = st.secrets["CHAT_ID"]
         send_text = f'https://api.telegram.org/bot{bot_token}/sendMessage?chat_id={chat_id}&parse_mode=Markdown&text={message}'
-        requests.get(send_text, timeout=5)
+        # 设置短超时，防止网络卡顿影响主程序
+        requests.get(send_text, timeout=3) 
     except Exception:
         pass 
 
@@ -37,20 +38,19 @@ class QuantEngine:
                 raw_symbol = row['Symbol']
                 
                 # --- 强力清洗无效数据 ---
-                # 1. 如果是真正的空值 (NaN/None)
                 if pd.isna(raw_symbol):
                     continue
                 
                 symbol = str(raw_symbol).strip()
                 
-                # 2. 如果是字符串 'nan' 或空字符串
+                # 过滤无效字符
                 if not symbol or symbol.lower() == 'nan':
                     continue
                 
                 # 获取其他元数据
                 name = str(row.get('Name', 'Unknown'))
                 exchange = str(row.get('Exchange', ''))
-                currency = str(row.get('Currency', '')) # 获取货币列辅助判断
+                currency = str(row.get('Currency', ''))
                 
                 # 数量处理
                 try:
@@ -81,15 +81,19 @@ class QuantEngine:
             return False, f"❌ 文件加载失败: {str(e)}"
 
     def _map_symbol(self, symbol, exchange, name, currency):
-        """智能映射 Ticker (增强版)"""
+        """智能映射 Ticker (包含特殊资产处理)"""
         symbol_upper = symbol.upper()
         
-        # 1. 已经是 Yahoo 格式 (包含 .TO, .NE 等)
+        # --- 1. 特殊资产手动映射 ---
+        # Wealthsimple GOLD -> 黄金期货 (COMEX Gold Futures)
+        if symbol_upper == 'GOLD' and ('WEALTHSIMPLE' in name.upper() or not exchange):
+            return 'GC=F' 
+        
+        # --- 2. 已经是 Yahoo 格式 ---
         if '.' in symbol_upper and ('TO' in symbol_upper or 'NE' in symbol_upper):
             return symbol_upper
         
-        # 2. 常见加股 ETF 特殊处理 (如 FEQT, XEQT, VFV 等)
-        # 如果货币是 CAD 且没有后缀，尝试加 .TO
+        # --- 3. 常见加股 ETF/CDR 处理 ---
         is_cad = currency.upper() == 'CAD'
         
         if 'CDR' in name or 'NEO' in exchange or 'CBOE' in exchange:
@@ -98,39 +102,38 @@ class QuantEngine:
         if 'TSX' in exchange or 'TORONTO' in exchange.upper():
             return f"{symbol_upper.replace('.', '-')}.TO"
             
-        # 如果没明确写交易所，但货币是 CAD，默认尝试 .TO
+        # 只有货币是 CAD 且没有后缀时，才尝试加 .TO
         if is_cad and '.' not in symbol_upper:
              return f"{symbol_upper}.TO"
         
-        # 3. 加密货币 (通常 Symbol 是 BTC, ETH 且 Exchange 为空)
+        # --- 4. 加密货币 ---
         if (not exchange or exchange.lower() == 'nan') and symbol_upper in ['BTC', 'ETH', 'SOL', 'DOGE']:
             return f"{symbol_upper}-USD"
             
-        # 4. 美股 (默认)
+        # --- 5. 默认回退 (美股) ---
         return symbol_upper
 
     def fetch_data_automatically(self):
-        """自动下载数据 (带重试和过滤)"""
+        """自动下载数据"""
         if self.portfolio.empty:
             return "持仓为空"
 
         tickers = self.portfolio['YF_Ticker'].unique().tolist()
-        # 最终过滤：移除任何包含 'NAN' 的代码
         valid_tickers = [t for t in tickers if t and 'NAN' not in t.upper()]
         
         if not valid_tickers:
             return "无有效代码"
 
+        # 移除重复项并排序
+        valid_tickers = sorted(list(set(valid_tickers)))
         ticker_str = " ".join(valid_tickers)
-        print(f"Fetching: {ticker_str}") # 用于调试
         
         try:
-            # 下载数据，增加线程
+            # 批量下载
             data = yf.download(ticker_str, period="1y", group_by='ticker', auto_adjust=True, threads=True)
             
             self.market_data = {}
             
-            # 处理数据
             for t in valid_tickers:
                 df = pd.DataFrame()
                 if len(valid_tickers) == 1:
@@ -139,19 +142,18 @@ class QuantEngine:
                     try:
                         df = data[t].copy()
                     except KeyError:
-                        # 某个股票下载失败，不影响其他的
                         continue
                 
-                # 删除全为空的行
+                # 删除空行
                 df = df.dropna(how='all')
                 
-                # 只有当数据行数足够计算指标时才保存 (例如至少20行)
-                if not df.empty and len(df) > 20:
+                # 只有数据足够才保存
+                if not df.empty and len(df) > 10:
                     self.market_data[t] = df
             
-            return f"✅ 成功更新 {len(self.market_data)}/{len(valid_tickers)} 只股票"
+            return f"✅ 更新完成: {len(self.market_data)}/{len(valid_tickers)}"
         except Exception as e:
-            return f"❌ 下载部分失败: {e}"
+            return f"❌ 下载异常: {e}"
 
     def calculate_strategy(self, ticker, strategy_name, params):
         """计算策略指标"""
@@ -159,7 +161,7 @@ class QuantEngine:
             return None
         
         df = self.market_data[ticker].copy()
-        # 确保按日期升序
+        # 按日期升序
         df = df.sort_index()
         
         try:
@@ -185,6 +187,7 @@ class QuantEngine:
                 bb = ta.bbands(df['Close'], length=length, std=2)
                 if bb is not None:
                     df = pd.concat([df, bb], axis=1)
+                    # 动态取列名: BBL, BBM, BBU
                     lower_col = bb.columns[0] 
                     upper_col = bb.columns[2]
                     df['Signal'] = 0
