@@ -1,8 +1,23 @@
 import pandas as pd
 import yfinance as yf
 import pandas_ta as ta
+import requests
 
+def send_telegram_alert(message):
+    """发送消息到手机"""
+    bot_token = "8593529087:AAHyY1h6HSPtTdOl40SuHPGG7LYkiCWOL1w"
+    chat_id = "5074684209"
+    
+    send_text = f'https://api.telegram.org/bot{bot_token}/sendMessage?chat_id={chat_id}&parse_mode=Markdown&text={message}'
+    
+    try:
+        response = requests.get(send_text)
+        return response.json()
+    except Exception as e:
+        return str(e)
+        
 class QuantEngine:
+    
     def __init__(self):
         self.portfolio = None
         self.market_data = {}
@@ -184,3 +199,25 @@ class QuantEngine:
         if ticker in self.market_data:
             return self.market_data[ticker]['Close'].iloc[-1]
         return 0.0
+        
+
+    def check_and_alert(self, ticker, strategy_name, params):
+        """检查信号并推送到手机"""
+        df = self.apply_strategy(ticker, strategy_name, params)
+        signal = self.get_latest_signal(df)
+        
+        # 只有当出现买入或卖出信号时才推送
+        if "BUY" in signal or "SELL" in signal:
+            current_price = df.iloc[-1]['Close']
+            msg = f"🚨 **交易信号提醒** 🚨\n\n" \
+                  f"股票: `{ticker}`\n" \
+                  f"价格: `${current_price:.2f}`\n" \
+                  f"策略: {strategy_name}\n" \
+                  f"信号: {signal}"
+            send_telegram_alert(msg)
+            return True # 触发了提醒
+        return False
+
+
+        
+ 
