@@ -5,8 +5,8 @@ import requests
 
 def send_telegram_alert(message):
     """发送消息到手机"""
-    bot_token = "8593529087:AAHyY1h6HSPtTdOl40SuHPGG7LYkiCWOL1w"
-    chat_id = "5074684209"
+    bot_token = "BOT_TOKEN"
+    chat_id = "CHAT_ID"
     
     send_text = f'https://api.telegram.org/bot{bot_token}/sendMessage?chat_id={chat_id}&parse_mode=Markdown&text={message}'
     
