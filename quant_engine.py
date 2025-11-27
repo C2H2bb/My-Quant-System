@@ -8,6 +8,7 @@ import json
 import os
 import numpy as np
 
+# Telegram 推送函数
 def send_telegram_message(message):
     try:
         bot_token = st.secrets["BOT_TOKEN"]
@@ -81,53 +82,41 @@ class QuantEngine:
             return f"✅ 数据更新完成 ({len(self.market_data)}/{len(valid_tickers)})"
         except Exception as e: return f"❌ 下载异常: {e}"
 
-    # --- 崩盘预警模块 (NEW) ---
+    # --- 崩盘预警模块 ---
     def analyze_nasdaq_crash_risk(self):
-        """
-        分析纳指 (QQQ) 的崩盘风险
-        """
         try:
-            # 获取 纳指ETF(QQQ) 和 纳指波动率(VXN)
             tickers = "QQQ ^VXN"
             data = yf.download(tickers, period="2y", group_by='ticker', auto_adjust=True, threads=True)
             
             df_qqq = pd.DataFrame()
             df_vxn = pd.DataFrame()
 
-            # yfinance 返回多层索引的处理
             try:
                 df_qqq = data['QQQ'].copy().dropna()
                 df_vxn = data['^VXN'].copy().dropna()
             except KeyError:
-                 # 备用处理，以防 yfinance 结构变化
                  pass
             
             if df_qqq.empty or df_vxn.empty:
                 return None
 
-            # 1. 波动率风险 (Fear Factor)
             current_vxn = df_vxn['Close'].iloc[-1]
             vxn_score = min((current_vxn / 40) * 100, 100) 
 
-            # 2. 均线乖离风险 (Bubble Factor)
             sma200 = ta.sma(df_qqq['Close'], length=200).iloc[-1]
             current_price = df_qqq['Close'].iloc[-1]
             deviation = (current_price - sma200) / sma200
             bubble_score = min(max(deviation / 0.20 * 100, 0), 100)
             
-            # 3. 动能耗尽风险 (Technical Weakness)
             sma50 = ta.sma(df_qqq['Close'], length=50).iloc[-1]
             trend_score = 100 if current_price < sma50 else 0
             
-            # 4. RSI 极端值
             rsi = ta.rsi(df_qqq['Close'], length=14).iloc[-1]
             
-            # --- 综合概率计算 ---
             total_risk_prob = (vxn_score * 0.3) + (bubble_score * 0.4) + (trend_score * 0.3)
             if rsi > 75: total_risk_prob += 10
             total_risk_prob = min(total_risk_prob, 100)
 
-            # --- 回撤幅度预测 ---
             drawdown_target = sma200
             drawdown_pct = (drawdown_target - current_price) / current_price * 100
             
