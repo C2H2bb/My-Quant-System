@@ -4,7 +4,6 @@ import pandas_ta as ta
 import requests
 import streamlit as st
 import numpy as np
-import time
 import json
 import os
 
@@ -23,7 +22,6 @@ class QuantEngine:
         self.config_file = "strategy_config.json"
         self.strategy_map = self.load_strategy_config()
 
-    # --- 基础数据加载 (保持不变) ---
     def load_portfolio(self, file_path_or_buffer):
         try:
             df = pd.read_csv(file_path_or_buffer)
@@ -80,93 +78,51 @@ class QuantEngine:
             return f"✅ 数据更新完成 ({len(self.market_data)}/{len(valid_tickers)})"
         except Exception as e: return f"❌ 下载异常: {e}"
 
-    # =========================================================
-    # 🔥 纳斯达克专业级全维分析引擎 (Pro Market Analysis)
-    # =========================================================
     def analyze_nasdaq_pro(self):
-        """
-        综合多维度数据分析纳指健康状况
-        """
+        """纳指专业级全维分析"""
         try:
-            # 1. 获取多维数据
-            # QQQ(纳指), QQQE(纳指等权-用于看宽度), ^VXN(波动率), ^TNX(10年美债), DX-Y.NYB(美元)
             tickers = "QQQ QQQE ^VXN ^TNX DX-Y.NYB"
             data = yf.download(tickers, period="2y", group_by='ticker', auto_adjust=True, threads=True)
             
-            # 数据完整性检查
             try:
-                q = data['QQQ'].dropna()   # Price
-                qe = data['QQQE'].dropna() # Breadth Proxy
-                vxn = data['^VXN'].dropna() # Volatility
-                tnx = data['^TNX'].dropna() # Macro Rates
-                dxy = data['DX-Y.NYB'].dropna() if 'DX-Y.NYB' in data else pd.DataFrame() # Macro Currency
-            except KeyError:
-                return None
-                
+                q = data['QQQ'].dropna()
+                qe = data['QQQE'].dropna()
+                vxn = data['^VXN'].dropna()
+                tnx = data['^TNX'].dropna()
+                dxy = data['DX-Y.NYB'].dropna() if 'DX-Y.NYB' in data else pd.DataFrame()
+            except KeyError: return None
             if q.empty: return None
 
             current_price = q['Close'].iloc[-1]
-            
-            # --- Ⅰ. 趋势类指标 (Trend) ---
             sma20 = ta.sma(q['Close'], 20).iloc[-1]
             sma50 = ta.sma(q['Close'], 50).iloc[-1]
             sma200 = ta.sma(q['Close'], 200).iloc[-1]
-            
-            # 乖离率
-            bias_50 = (current_price - sma50) / sma50 * 100
             bias_200 = (current_price - sma200) / sma200 * 100
             
-            # 趋势强度 (ADX)
             adx_df = ta.adx(q['High'], q['Low'], q['Close'], 14)
             adx = adx_df['ADX_14'].iloc[-1] if adx_df is not None else 0
             
-            # MACD
-            macd = ta.macd(q['Close'])
-            macd_hist = macd['MACDh_12_26_9'].iloc[-1]
-            
-            # --- Ⅱ. 波动率与风险 (Volatility) ---
             curr_vxn = vxn['Close'].iloc[-1]
             vxn_ma20 = ta.sma(vxn['Close'], 20).iloc[-1]
             vxn_trend = "扩张" if curr_vxn > vxn_ma20 * 1.05 else "正常"
             
-            # 回撤计算
             ath = q['High'].max()
             dd_current = (current_price - ath) / ath * 100
             
-            # 历史波动率 HV20
-            q['log_ret'] = np.log(q['Close'] / q['Close'].shift(1))
-            hv20 = q['log_ret'].rolling(20).std().iloc[-1] * np.sqrt(252) * 100
-            
-            # --- Ⅲ. 结构性指标 (Breadth) ---
-            # 使用 QQQE/QQQ 比率作为宽度代理
-            # 如果 QQQE 跑输 QQQ，说明全靠巨头拉升，宽度差
             q_pct = q['Close'].pct_change(20).iloc[-1]
             qe_pct = qe['Close'].pct_change(20).iloc[-1]
             breadth_health = "健康" if qe_pct >= q_pct - 0.02 else "恶化 (仅巨头拉升)"
             
-            # 资金流 (MFI)
             mfi = ta.mfi(q['High'], q['Low'], q['Close'], q['Volume'], 14).iloc[-1]
-            
-            # --- Ⅳ. 宏观 (Macro) ---
             tnx_val = tnx['Close'].iloc[-1]
-            tnx_ma = ta.sma(tnx['Close'], 20).iloc[-1]
-            macro_pressure = "高压力" if tnx_val > tnx_ma and tnx_val > 4.0 else "中性"
-
-            # ========================
-            # 🧠 核心逻辑判定层
-            # ========================
             
-            # 1. 市场状态分类 (9 States)
             state = "Choppy"
-            
-            # 熊市逻辑
             if current_price < sma200 and current_price < sma50:
                 if curr_vxn > 35: state = "Panic"
                 else: state = "Bear Market"
-            # 牛市逻辑
             elif current_price > sma200:
                 if current_price > sma50 and current_price > sma20:
-                    if bias_200 > 20 and rsi > 75: state = "Overheated"
+                    if bias_200 > 20 and mfi > 80: state = "Overheated"
                     elif adx > 25: state = "Strong Bull"
                     else: state = "Healthy Uptrend"
                 elif current_price < sma20:
@@ -174,23 +130,18 @@ class QuantEngine:
                     else: state = "Deep Pullback"
                 elif current_price < sma50 and current_price > sma200:
                      state = "Repairing"
-            else:
-                state = "Choppy"
-
-            # 2. 趋势健康评分 (0-100)
+            
             health_score = 50
             if current_price > sma200: health_score += 20
             if current_price > sma50: health_score += 15
             if current_price > sma20: health_score += 10
-            if macd_hist > 0: health_score += 5
             if mfi > 50: health_score += 5
             if breadth_health == "健康": health_score += 10
             if curr_vxn < 20: health_score += 10
             elif curr_vxn > 30: health_score -= 15
-            if bias_200 > 20: health_score -= 10 # 泡沫扣分
+            if bias_200 > 20: health_score -= 10
             health_score = max(0, min(100, health_score))
             
-            # 3. 趋势方向
             trend_dir = "震荡"
             if current_price > sma50: trend_dir = "上升"
             elif current_price < sma50: trend_dir = "下降"
@@ -199,27 +150,22 @@ class QuantEngine:
             if adx > 25: trend_str = "强"
             elif adx > 40: trend_str = "极强"
 
-            # 4. 风险预测 (Heuristic)
-            # 短期风险：看超买和波动率突刺
             rsi = ta.rsi(q['Close'], 14).iloc[-1]
-            prob_short_drop = 20 # Base
+            prob_short_drop = 20
             if rsi > 70: prob_short_drop += 30
             if curr_vxn > 25: prob_short_drop += 20
-            if macd_hist < 0 and current_price > sma20: prob_short_drop += 10
             
-            # 中期风险：看宏观和结构
-            prob_med_crash = 10 # Base
+            prob_med_crash = 10
             if bias_200 > 20: prob_med_crash += 20
             if breadth_health != "健康": prob_med_crash += 15
-            if macro_pressure == "高压力": prob_med_crash += 15
+            if tnx_val > 4.5: prob_med_crash += 15
             if current_price < sma50: prob_med_crash += 10
 
-            # 5. 信号汇总
             signals = []
             if curr_vxn > 25: signals.append(f"⚠️ VXN 高位 ({curr_vxn:.1f})，恐慌情绪蔓延")
             if breadth_health != "健康": signals.append("⚠️ 市场宽度恶化，仅靠巨头支撑")
             if bias_200 > 20: signals.append("⚠️ 年线乖离过大，长期回调风险高")
-            if macro_pressure == "高压力": signals.append("⚠️ 美债收益率上行，压制估值")
+            if tnx_val > 4.2: signals.append("⚠️ 美债收益率上行，压制估值")
             if not signals and health_score > 70: signals.append("✅ 结构健康，适合持仓")
             if state == "Repairing": signals.append("🛠️ 震荡修复期，多空博弈")
 
@@ -244,14 +190,11 @@ class QuantEngine:
                     "DD": dd_current
                 }
             }
-
         except Exception as e:
             print(f"Pro Analysis Error: {e}")
             return None
 
-    # --- 个股策略计算 (保留之前逻辑) ---
     def analyze_market_regime(self, ticker):
-        """个股多周期状态分析"""
         if ticker not in self.market_data: return None
         df = self.market_data[ticker].copy()
         try:
