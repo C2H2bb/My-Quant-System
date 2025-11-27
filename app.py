@@ -39,11 +39,9 @@ with st.expander("🛡️ 纳斯达克全维战态感知 (Nasdaq Pro Analysis)",
     nasdaq_pro = engine.analyze_nasdaq_pro()
     
     if nasdaq_pro:
-        # 1. 状态标头
         state = nasdaq_pro['State']
         score = nasdaq_pro['Score']
         
-        # 配色逻辑
         state_colors = {
             "Strong Bull": "#d4edda", "Healthy Uptrend": "#d1e7dd",
             "Overheated": "#fff3cd", "Shallow Pullback": "#cfe2ff",
@@ -59,9 +57,8 @@ with st.expander("🛡️ 纳斯达克全维战态感知 (Nasdaq Pro Analysis)",
         </div>
         """, unsafe_allow_html=True)
         
-        st.write("") # Spacer
+        st.write("")
 
-        # 2. 核心四维数据
         c1, c2, c3, c4 = st.columns(4)
         m = nasdaq_pro['Metrics']
         
@@ -85,7 +82,6 @@ with st.expander("🛡️ 纳斯达克全维战态感知 (Nasdaq Pro Analysis)",
             st.metric("短期回撤概率", f"{nasdaq_pro['Risk_Short']}%", help="1-5天风险")
             st.metric("中期崩盘概率", f"{nasdaq_pro['Risk_Med']}%", help="1-4周风险")
             
-        # 3. 关键信号汇总
         if nasdaq_pro['Signals']:
             st.markdown("---")
             st.caption("📢 **关键情报 (Key Signals)**")
@@ -95,7 +91,6 @@ with st.expander("🛡️ 纳斯达克全维战态感知 (Nasdaq Pro Analysis)",
     else:
         st.warning("无法获取纳指全维数据，请检查网络或清除缓存重试。")
 
-# --- 默认参数 ---
 default_params = {
     'SMA Cross': {'short': 10, 'long': 50},
     'SMA Reversal': {'short': 10, 'long': 50},
@@ -103,10 +98,9 @@ default_params = {
     'Bollinger': {'length': 20}
 }
 
-# --- 布局 ---
 tab1, tab2, tab3 = st.tabs(["📊 投资组合", "🧠 个股诊断", "⚙️ 设置"])
 
-# Tab 1: 投资组合 (保持简洁)
+# Tab 1
 with tab1:
     valid_tickers = [t for t in engine.portfolio['YF_Ticker'].unique() if t in engine.market_data]
     global_strategy = st.sidebar.selectbox("备用策略", ["SMA Cross", "SMA Reversal", "RSI", "Bollinger"], index=0)
@@ -155,7 +149,7 @@ with tab1:
         if count > 0: st.success(f"已推 {count} 条")
         else: st.info("无信号")
 
-# Tab 2: 个股诊断
+# Tab 2
 with tab2:
     c_sel, c_det = st.columns([1, 3])
     with c_sel:
@@ -183,7 +177,7 @@ with tab2:
                     st.write("")
                     if st.button(f"🔒 锁定 {p_strat}"):
                         engine.save_strategy_config(sel_yf, p_strat)
-                        st.experimental_rerun()
+                        st.rerun()
 
                 df_c = engine.calculate_strategy(sel_yf, p_strat, default_params.get(p_strat, {}))
                 fig = go.Figure()
