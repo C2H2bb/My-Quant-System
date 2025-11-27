@@ -4,6 +4,8 @@ import pandas_ta as ta
 import requests
 import streamlit as st
 import time
+import json
+import os
 
 def send_telegram_message(message):
     try:
@@ -21,7 +23,7 @@ class QuantEngine:
         self.config_file = "strategy_config.json"
         self.strategy_map = self.load_strategy_config()
 
-    # --- 数据加载 (保持不变) ---
+    # --- 数据加载 ---
     def load_portfolio(self, file_path_or_buffer):
         try:
             df = pd.read_csv(file_path_or_buffer)
@@ -78,7 +80,7 @@ class QuantEngine:
             return f"✅ 数据更新完成 ({len(self.market_data)}/{len(valid_tickers)})"
         except Exception as e: return f"❌ 下载异常: {e}"
 
-    # --- 智能分析与策略计算 (核心优化部分) ---
+    # --- 智能分析与策略计算 ---
 
     def analyze_market_regime(self, ticker):
         """判断股票当前处于什么状态 (趋势 vs 震荡)"""
@@ -86,33 +88,37 @@ class QuantEngine:
         df = self.market_data[ticker].copy()
         
         # 1. 计算 ADX (趋势强度)
-        adx_df = ta.adx(df['High'], df['Low'], df['Close'], length=14)
-        current_adx = 0
-        if adx_df is not None and not adx_df.empty:
-            current_adx = adx_df['ADX_14'].iloc[-1]
+        try:
+            adx_df = ta.adx(df['High'], df['Low'], df['Close'], length=14)
+            current_adx = 0
+            if adx_df is not None and not adx_df.empty:
+                current_adx = adx_df['ADX_14'].iloc[-1]
+        except:
+            current_adx = 0
         
-        # 2. 计算 ATR (波动率) 辅助判断
-        atr = ta.atr(df['High'], df['Low'], df['Close'], length=14).iloc[-1]
-        price = df['Close'].iloc[-1]
-        volatility = (atr / price) * 100 # 波动率百分比
+        # 2. 计算 ATR (波动率)
+        try:
+            atr = ta.atr(df['High'], df['Low'], df['Close'], length=14).iloc[-1]
+            price = df['Close'].iloc[-1]
+            volatility = (atr / price) * 100
+        except:
+            volatility = 0
 
         # 3. 判定逻辑
         if current_adx > 25:
             trend_status = "强趋势 🔥"
-            # 趋势强，适合 SMA 或 MACD
             recommendation = "SMA Cross" 
         elif current_adx < 20:
             trend_status = "弱势/盘整 💤"
-            # 没趋势，SMA 会死得很惨，推荐布林带做高抛低吸
             recommendation = "Bollinger"
         else:
             trend_status = "趋势不明 🤔"
-            recommendation = "RSI" # 中性情况用 RSI 辅助
+            recommendation = "RSI"
             
         return {
             "ADX": current_adx,
             "Volatility": volatility,
-            "Status": trend_status,
+            "Regime": trend_status, # 关键修复：将 Status 改回 Regime 以匹配 app.py
             "Recommendation": recommendation
         }
 
@@ -124,8 +130,11 @@ class QuantEngine:
         df = self.market_data[ticker].copy().sort_index()
         
         # 计算 ADX 用于过滤
-        adx_df = ta.adx(df['High'], df['Low'], df['Close'], length=14)
-        df = pd.concat([df, adx_df], axis=1)
+        try:
+            adx_df = ta.adx(df['High'], df['Low'], df['Close'], length=14)
+            df = pd.concat([df, adx_df], axis=1)
+        except:
+            df['ADX_14'] = 0
 
         try:
             df['Signal'] = 0 # 默认为0
@@ -137,20 +146,15 @@ class QuantEngine:
                 df['SMA_S'] = ta.sma(df['Close'], length=s)
                 df['SMA_L'] = ta.sma(df['Close'], length=l)
                 
-                # 逻辑修复：不是 > 就买，而是“昨天 < 今天 >” (交叉瞬间)
-                # Shift(1) 代表昨天的数据
                 prev_s = df['SMA_S'].shift(1)
                 prev_l = df['SMA_L'].shift(1)
                 curr_s = df['SMA_S']
                 curr_l = df['SMA_L']
                 
-                # 金叉: 昨天短<长 且 今天短>长
                 golden_cross = (prev_s < prev_l) & (curr_s > curr_l)
-                # 死叉: 昨天短>长 且 今天短<长
                 death_cross = (prev_s > prev_l) & (curr_s < curr_l)
                 
                 # 核心过滤：只有当 ADX > 20 时，才承认这个交叉信号
-                # 如果 ADX 很低，说明是横盘震荡，此时的交叉通常是假动作
                 strong_trend = df['ADX_14'] > 20
                 
                 df.loc[golden_cross & strong_trend, 'Signal'] = 1
@@ -174,9 +178,7 @@ class QuantEngine:
                     df = pd.concat([df, bb], axis=1)
                     lower = bb.columns[0]; upper = bb.columns[2]
                     
-                    # 收盘价跌破下轨 -> 买
                     df.loc[df['Close'] < df[lower], 'Signal'] = 1
-                    # 收盘价突破上轨 -> 卖
                     df.loc[df['Close'] > df[upper], 'Signal'] = -1
 
         except Exception as e:
@@ -201,7 +203,6 @@ class QuantEngine:
 
     # --- 配置管理 ---
     def load_strategy_config(self):
-        import json, os
         if os.path.exists(self.config_file):
             try:
                 with open(self.config_file, 'r') as f: return json.load(f)
@@ -209,7 +210,6 @@ class QuantEngine:
         return {}
 
     def save_strategy_config(self, ticker, strategy):
-        import json
         self.strategy_map[ticker] = strategy
         with open(self.config_file, 'w') as f: json.dump(self.strategy_map, f)
             
