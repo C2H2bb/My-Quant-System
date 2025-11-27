@@ -105,26 +105,28 @@ class QuantEngine:
             volatility = 0
 
         # 3. 判定逻辑
+        # 逻辑更新：如果趋势很强(ADX高)，推荐顺势(SMA Cross)
+        # 如果趋势弱，推荐震荡策略(Bollinger)或反向策略(SMA Reversal)
         if current_adx > 25:
             trend_status = "强趋势 🔥"
             recommendation = "SMA Cross" 
         elif current_adx < 20:
             trend_status = "弱势/盘整 💤"
-            recommendation = "Bollinger"
+            recommendation = "SMA Reversal" # 震荡市推荐反向操作
         else:
             trend_status = "趋势不明 🤔"
-            recommendation = "RSI"
+            recommendation = "Bollinger"
             
         return {
             "ADX": current_adx,
             "Volatility": volatility,
-            "Regime": trend_status, # 关键修复：将 Status 改回 Regime 以匹配 app.py
+            "Regime": trend_status,
             "Recommendation": recommendation
         }
 
     def calculate_strategy(self, ticker, strategy_name, params):
         """
-        计算策略指标 (已修复逻辑：只在交叉点发出信号，且增加 ADX 过滤)
+        计算策略指标
         """
         if ticker not in self.market_data: return None
         df = self.market_data[ticker].copy().sort_index()
@@ -139,7 +141,7 @@ class QuantEngine:
         try:
             df['Signal'] = 0 # 默认为0
 
-            # --- 策略 1: SMA Cross (优化版) ---
+            # --- 策略 1: SMA Cross (顺势) ---
             if strategy_name == "SMA Cross":
                 s = params.get('short', 10)
                 l = params.get('long', 50)
@@ -153,31 +155,48 @@ class QuantEngine:
                 
                 golden_cross = (prev_s < prev_l) & (curr_s > curr_l)
                 death_cross = (prev_s > prev_l) & (curr_s < curr_l)
-                
-                # 核心过滤：只有当 ADX > 20 时，才承认这个交叉信号
                 strong_trend = df['ADX_14'] > 20
                 
                 df.loc[golden_cross & strong_trend, 'Signal'] = 1
                 df.loc[death_cross & strong_trend, 'Signal'] = -1
 
-            # --- 策略 2: RSI ---
+            # --- 策略 2: SMA Reversal (反向/逆势) ---
+            # 你的“神奇反向”策略：死叉买入，金叉卖出
+            elif strategy_name == "SMA Reversal":
+                s = params.get('short', 10)
+                l = params.get('long', 50)
+                df['SMA_S'] = ta.sma(df['Close'], length=s)
+                df['SMA_L'] = ta.sma(df['Close'], length=l)
+                
+                prev_s = df['SMA_S'].shift(1)
+                prev_l = df['SMA_L'].shift(1)
+                curr_s = df['SMA_S']
+                curr_l = df['SMA_L']
+                
+                golden_cross = (prev_s < prev_l) & (curr_s > curr_l)
+                death_cross = (prev_s > prev_l) & (curr_s < curr_l)
+                
+                # 这里我们依然使用 ADX 过滤，确保是有力度的反转信号
+                strong_trend = df['ADX_14'] > 20 
+                
+                # 逻辑反转！
+                df.loc[death_cross & strong_trend, 'Signal'] = 1  # 死叉 -> 买入 (抄底)
+                df.loc[golden_cross & strong_trend, 'Signal'] = -1 # 金叉 -> 卖出 (逃顶)
+
+            # --- 策略 3: RSI ---
             elif strategy_name == "RSI":
                 length = params.get('length', 14)
                 df['RSI'] = ta.rsi(df['Close'], length=length)
-                
-                # RSI < 30 买入
                 df.loc[df['RSI'] < 30, 'Signal'] = 1
-                # RSI > 70 卖出
                 df.loc[df['RSI'] > 70, 'Signal'] = -1
 
-            # --- 策略 3: Bollinger ---
+            # --- 策略 4: Bollinger ---
             elif strategy_name == "Bollinger":
                 length = params.get('length', 20)
                 bb = ta.bbands(df['Close'], length=length, std=2)
                 if bb is not None:
                     df = pd.concat([df, bb], axis=1)
                     lower = bb.columns[0]; upper = bb.columns[2]
-                    
                     df.loc[df['Close'] < df[lower], 'Signal'] = 1
                     df.loc[df['Close'] > df[upper], 'Signal'] = -1
 
@@ -189,7 +208,6 @@ class QuantEngine:
 
     def get_signal_status(self, df):
         if df is None or 'Signal' not in df.columns: return "No Data"
-        # 查找最近一次非0的信号
         last_signals = df[df['Signal'] != 0]
         if last_signals.empty:
             return "⚪ 无信号"
