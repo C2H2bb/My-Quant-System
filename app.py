@@ -145,12 +145,8 @@ if st.button("🚀 扫描并发送 Telegram 提醒"):
 ```
 
 ### 修复说明
-1.  **移除了 `app.py` 中错误的 `ta.sma` 调用**：之前你的 `app.py` 试图自己在前端算指标，但没引入库。现在改为调用 `engine.apply_strategy(...)`，引擎会返回计算好 `SMA_S`, `SMA_L` 列的 DataFrame。
-2.  **`app.py` 不再依赖本地 CSV 路径**：使用了 `st.file_uploader`。这样你在公司电脑打开网页时，直接把 CSV 拖进去就行，不需要改代码里的文件路径。
-3.  **Telegram 修复**：在 `quant_engine.py` 里，我加了一个 fallback 机制。它会先试着读 Secrets，读不到就用你给的那个硬编码 Token。这样无论怎么配都能跑。
-4.  **数据保护**：增加对 `nan-usd` 的过滤，这通常是 CSV 空行导致的，之前会卡住 yfinance。
+###1.  **移除了 `app.py` 中错误的 `ta.sma` 调用**：之前你的 `app.py` 试图自己在前端算指标，但没引入库。现在改为调用 `engine.apply_strategy(...)`，引擎会返回计算好 `SMA_S`, `SMA_L` 列的 DataFrame。
+###2.  **`app.py` 不再依赖本地 CSV 路径**：使用了 `st.file_uploader`。这样你在公司电脑打开网页时，直接把 CSV 拖进去就行，不需要改代码里的文件路径。
+###3.  **Telegram 修复**：在 `quant_engine.py` 里，我加了一个 fallback 机制。它会先试着读 Secrets，读不到就用你给的那个硬编码 Token。这样无论怎么配都能跑。
+###4.  **数据保护**：增加对 `nan-usd` 的过滤，这通常是 CSV 空行导致的，之前会卡住 yfinance。
 
-### 如何运行
-1.  更新这两个文件。
-2.  Streamlit 网页会自动检测到文件变化并提示 Rerun（或者你手动刷新）。
-3.  在侧边栏上传你的 CSV 文件即可开始。
