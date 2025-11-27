@@ -4,171 +4,159 @@ import plotly.graph_objects as go
 import os
 from quant_engine import QuantEngine
 
-# --- 1. 页面设置 ---
+# --- 页面配置 ---
 st.set_page_config(page_title="自动量化系统", layout="wide", page_icon="📈")
 
-# --- 2. 核心引擎初始化 (修复 AttributeError 的关键) ---
-# 我们不再依赖 session_state 存储整个 engine 对象，防止代码更新后对象过期
-# 每次运行都重新实例化轻量级 Engine，数据通过 @st.cache_data 缓存
+# --- 调试工具：清除缓存 ---
+# 如果代码更新后还是报错，可以点击左侧底部的这个按钮
+if st.sidebar.checkbox("显示调试工具", value=False):
+    if st.sidebar.button("🧹 清除数据缓存"):
+        st.cache_data.clear()
+        st.success("缓存已清除，请刷新页面")
+        st.stop()
+
+# --- 初始化引擎 ---
 engine = QuantEngine()
 
-# --- 3. 自动加载数据逻辑 ---
+# --- 数据源加载 ---
 st.sidebar.header("📂 数据源")
-
-# A. 优先查找本地 holdings.csv
 default_file = "holdings.csv"
 csv_source = None
 
 if os.path.exists(default_file):
-    st.sidebar.success(f"已自动识别本地文件: {default_file}")
+    st.sidebar.success(f"本地文件: {default_file}")
     csv_source = default_file
 else:
-    # B. 没找到则显示上传框
-    st.sidebar.warning("未找到 holdings.csv，请上传：")
-    uploaded = st.sidebar.file_uploader("上传 CSV", type=['csv'])
+    uploaded = st.sidebar.file_uploader("上传 Wealthsimple CSV", type=['csv'])
     if uploaded:
         csv_source = uploaded
 
-# 如果没有数据源，停止运行
 if not csv_source:
-    st.info("👈 请在左侧上传持仓文件，或将 holdings.csv 放入项目根目录。")
+    st.info("👈 请上传 CSV 文件")
     st.stop()
 
-# 加载持仓
 success, msg = engine.load_portfolio(csv_source)
 if not success:
     st.error(msg)
     st.stop()
 
-# --- 4. 自动获取行情 (带缓存) ---
-# 使用 Streamlit 缓存装饰器，避免每次点击其他按钮都重新下载数据
-@st.cache_data(ttl=3600) # 数据缓存 1 小时
-def get_market_data_cached(_engine):
-    return _engine.fetch_data_automatically()
+# --- 自动获取行情 (带缓存) ---
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_market_data_cached(_engine_trigger):
+    # 这里只用作触发缓存，实际上操作的是 engine 实例
+    return engine.fetch_data_automatically()
 
-with st.spinner("正在自动同步全球行情数据..."):
-    status_msg = get_market_data_cached(engine)
-    # 注意：缓存后 engine 内部的 market_data 可能会丢失，因为 engine 是重新实例化的
-    # 所以我们需要稍微 hack 一下，或者让 fetch 直接返回 data 字典
-    # 简便起见，这里我们再次调用一次 fetch (yfinance 本身有缓存，很快)
-    engine.fetch_data_automatically()
+with st.spinner("正在同步行情..."):
+    # 使用一个简单字符串作为缓存键，或者直接调用
+    # 为了避免对象序列化问题，这里我们在每次重载页面时直接运行一次
+    # yfinance 自身有缓存，所以不用太担心频繁请求
+    status = engine.fetch_data_automatically()
+    if "❌" in status:
+        st.warning(status)
+    else:
+        st.toast(status)
 
-# --- 5. 侧边栏：策略控制 ---
+# --- 策略配置 ---
 st.sidebar.divider()
 st.sidebar.header("🧠 策略中心")
-strategy = st.sidebar.selectbox("核心策略", ["SMA Cross", "RSI", "Bollinger"])
+strategy = st.sidebar.selectbox("选择策略", ["SMA Cross", "RSI", "Bollinger"])
 
 params = {}
 if strategy == "SMA Cross":
-    col1, col2 = st.sidebar.columns(2)
-    params['short'] = col1.number_input("短周期", 5, 60, 10)
-    params['long'] = col2.number_input("长周期", 20, 200, 50)
+    c1, c2 = st.sidebar.columns(2)
+    params['short'] = c1.number_input("短周期", 5, 60, 10)
+    params['long'] = c2.number_input("长周期", 20, 200, 50)
 elif strategy == "RSI":
     params['length'] = st.sidebar.number_input("RSI 周期", 5, 30, 14)
 
-# --- 6. 主界面：信号仪表盘 ---
+# --- 主界面 ---
 st.title("🚀 个人量化指挥台")
 
-# 计算所有信号
-signal_data = []
+# 处理数据
 valid_tickers = [t for t in engine.portfolio['YF_Ticker'].unique() if t in engine.market_data]
-
 if not valid_tickers:
-    st.warning("暂无有效行情数据，请检查网络或股票代码。")
+    st.error("没有获取到任何有效行情数据。")
     st.stop()
 
-# 进度条体验优化
-progress = st.progress(0)
-
-for i, ticker in enumerate(valid_tickers):
-    # 计算策略
+signal_data = []
+for ticker in valid_tickers:
     df_res = engine.calculate_strategy(ticker, strategy, params)
     signal_status = engine.get_signal_status(df_res, strategy)
-    
-    # 获取当前价格
     price = df_res['Close'].iloc[-1] if df_res is not None else 0
     
-    # 找到对应的原始名称
-    original_name = engine.portfolio[engine.portfolio['YF_Ticker'] == ticker].iloc[0]['Symbol']
+    # 获取原始信息
+    row_info = engine.portfolio[engine.portfolio['YF_Ticker'] == ticker].iloc[0]
+    original_name = row_info['Name']
+    original_symbol = row_info['Symbol']
     
     signal_data.append({
-        "代码": original_name,
-        "当前价格": f"${price:.2f}",
-        "策略信号": signal_status,
-        "执行策略": strategy
+        "代码": original_symbol,
+        "名称": original_name,
+        "Yahoo代码": ticker, # 显示实际查询的代码，方便调试
+        "价格": f"${price:.2f}",
+        "信号": signal_status
     })
-    progress.progress((i + 1) / len(valid_tickers))
 
-progress.empty() # 清除进度条
-
-# 展示表格
-res_df = pd.DataFrame(signal_data)
+df_display = pd.DataFrame(signal_data)
 
 def color_coding(val):
-    if "BUY" in val: return 'background-color: #d1e7dd; color: #0f5132' # Green
-    if "SELL" in val: return 'background-color: #f8d7da; color: #842029' # Red
+    if "BUY" in val: return 'background-color: #d1e7dd; color: green; font-weight: bold'
+    if "SELL" in val: return 'background-color: #f8d7da; color: red; font-weight: bold'
     return ''
 
-st.dataframe(res_df.style.map(color_coding, subset=['策略信号']), use_container_width=True)
+st.dataframe(
+    df_display.style.map(color_coding, subset=['信号']), 
+    use_container_width=True,
+    column_config={
+        "代码": "Symbol",
+        "名称": "Name",
+        "Yahoo代码": st.column_config.TextColumn("YF Ticker", help="实际用于查询行情的代码"),
+    }
+)
 
-# --- 7. 可视化详情 ---
+# --- 图表 ---
 st.divider()
-col_chart, col_info = st.columns([3, 1])
+c_chart, c_list = st.columns([3, 1])
 
-with col_info:
-    st.subheader("🔍 深度透视")
-    selected_symbol = st.radio("选择股票", valid_tickers)
+with c_list:
+    st.subheader("📊 走势图")
+    # 让用户选原始 Symbol，显示更友好
+    choice = st.radio("选择资产", df_display['代码'].tolist())
+    # 反查对应的 Yahoo Ticker
+    sel_yf = df_display[df_display['代码'] == choice]['Yahoo代码'].iloc[0]
 
-with col_chart:
-    if selected_symbol:
-        df_chart = engine.calculate_strategy(selected_symbol, strategy, params)
-        
+with c_chart:
+    if sel_yf:
+        df_chart = engine.calculate_strategy(sel_yf, strategy, params)
         if df_chart is not None:
             fig = go.Figure()
-            # 蜡烛图
             fig.add_trace(go.Candlestick(
-                x=df_chart.index,
-                open=df_chart['Open'], high=df_chart['High'],
-                low=df_chart['Low'], close=df_chart['Close'],
-                name='K线'
+                x=df_chart.index, open=df_chart['Open'], high=df_chart['High'],
+                low=df_chart['Low'], close=df_chart['Close'], name='K线'
             ))
             
-            # 策略线绘制
             if strategy == "SMA Cross":
-                if 'SMA_S' in df_chart.columns:
-                    fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SMA_S'], line=dict(color='orange', width=1.5), name='快线'))
-                if 'SMA_L' in df_chart.columns:
-                    fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SMA_L'], line=dict(color='blue', width=1.5), name='慢线'))
+                fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SMA_S'], line=dict(color='orange'), name='快线'))
+                fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SMA_L'], line=dict(color='blue'), name='慢线'))
             
-            # 买卖点标记
+            # 买卖点
             buys = df_chart[df_chart['Signal'] == 1]
             sells = df_chart[df_chart['Signal'] == -1]
+            fig.add_trace(go.Scatter(x=buys.index, y=buys['Close'], mode='markers', marker=dict(symbol='triangle-up', size=12, color='green'), name='买入'))
+            fig.add_trace(go.Scatter(x=sells.index, y=sells['Close'], mode='markers', marker=dict(symbol='triangle-down', size=12, color='red'), name='卖出'))
             
-            fig.add_trace(go.Scatter(
-                x=buys.index, y=buys['Close'], 
-                mode='markers', marker=dict(symbol='triangle-up', size=12, color='green'), name='买入'
-            ))
-            fig.add_trace(go.Scatter(
-                x=sells.index, y=sells['Close'], 
-                mode='markers', marker=dict(symbol='triangle-down', size=12, color='red'), name='卖出'
-            ))
-
-            fig.update_layout(height=500, margin=dict(l=20, r=20, t=40, b=20))
+            fig.update_layout(height=500, margin=dict(t=30, b=20, l=20, r=20))
             st.plotly_chart(fig, use_container_width=True)
 
-# --- 8. 手机推送 ---
+# --- 推送 ---
 st.divider()
-if st.button("📡 立即推送信号到手机"):
+if st.button("📡 推送信号到 Telegram"):
     count = 0
     for item in signal_data:
-        if "BUY" in item['策略信号'] or "SELL" in item['策略信号']:
-            msg = f"🚨 **{item['策略信号']} 提醒**\n股票: {item['代码']}\n价格: {item['当前价格']}"
-            # 调用 engine 外部的辅助函数，防止类实例问题
+        if "BUY" in item['信号'] or "SELL" in item['信号']:
             from quant_engine import send_telegram_message
+            msg = f"🚨 *{item['信号']}*\nSymbol: `{item['代码']}`\nPrice: {item['价格']}"
             send_telegram_message(msg)
             count += 1
-    
-    if count > 0:
-        st.success(f"已发送 {count} 条重要信号！")
-    else:
-        st.info("当前无买卖信号，无需推送。")
+    if count > 0: st.success(f"已推送 {count} 条信号")
+    else: st.info("无信号推送")
