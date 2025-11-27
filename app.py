@@ -33,7 +33,7 @@ with st.spinner("正在进行全维市场扫描..."):
     status = engine.fetch_data_automatically()
 
 # ==========================================
-# 🛡️ 纳指专业级市场状态分析 (Pro Dashboard)
+# 🛡️ 纳指专业级市场状态分析
 # ==========================================
 with st.expander("🛡️ 纳斯达克全维战态感知 (Nasdaq Pro Analysis)", expanded=True):
     nasdaq_pro = engine.analyze_nasdaq_pro()
