@@ -40,12 +40,12 @@ with st.expander("📡 纳指全景监控雷达 (Nasdaq Market Cycle)", expanded
     risk_data = engine.analyze_nasdaq_crash_risk()
     
     if risk_data:
-        # 状态栏背景色逻辑
-        phase = risk_data['Phase']
-        bg_color = "#f0f2f6" # 默认灰
-        if "上涨" in phase: bg_color = "#d1e7dd" # 绿
-        elif "恐慌" in phase or "熊市" in phase: bg_color = "#f8d7da" # 红
-        elif "修复" in phase or "过热" in phase: bg_color = "#fff3cd" # 黄
+        # 这里的 Key 必须与 quant_engine.py 返回的字典一致 ('Phase')
+        phase = risk_data['Phase'] 
+        bg_color = "#f0f2f6"
+        if "上涨" in phase: bg_color = "#d1e7dd"
+        elif "恐慌" in phase or "熊市" in phase: bg_color = "#f8d7da"
+        elif "修复" in phase or "过热" in phase: bg_color = "#fff3cd"
 
         st.markdown(f"""
         <div style="background-color: {bg_color}; padding: 15px; border-radius: 10px; margin-bottom: 15px;">
@@ -68,7 +68,7 @@ with st.expander("📡 纳指全景监控雷达 (Nasdaq Market Cycle)", expanded
             
         st.caption(f"📊 长期均线乖离率: {risk_data['SMA200_Bias']:.1f}% (正值代表在年线上方，负值代表破位)")
     else:
-        st.info("正在获取纳指数据，请稍候...")
+        st.info("正在获取纳指数据，请稍候... (如果长时间未显示，请尝试清除缓存)")
 
 
 # --- 默认参数 ---
