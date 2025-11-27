@@ -142,7 +142,7 @@ if st.button("🚀 扫描并发送 Telegram 提醒"):
         st.success(f"完成！共推送 {count} 条信号。")
     else:
         st.info("未发现强买卖信号，无推送。")
-```
+
 
 ### 修复说明
 ###1.  **移除了 `app.py` 中错误的 `ta.sma` 调用**：之前你的 `app.py` 试图自己在前端算指标，但没引入库。现在改为调用 `engine.apply_strategy(...)`，引擎会返回计算好 `SMA_S`, `SMA_L` 列的 DataFrame。
