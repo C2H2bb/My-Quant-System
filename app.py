@@ -39,6 +39,7 @@ with st.spinner("正在分析全球市场数据..."):
 # --- 策略默认参数 ---
 default_params = {
     'SMA Cross': {'short': 10, 'long': 50},
+    'SMA Reversal': {'short': 10, 'long': 50}, # 反向策略参数相同
     'RSI': {'length': 14},
     'Bollinger': {'length': 20}
 }
@@ -57,18 +58,19 @@ with tab1:
     valid_tickers = [t for t in engine.portfolio['YF_Ticker'].unique() if t in engine.market_data]
     
     # 全局默认策略 (Fallback)
-    global_strategy = st.sidebar.selectbox("默认备用策略", ["SMA Cross", "RSI", "Bollinger"], index=0)
+    # 在这里加入了 "SMA Reversal"
+    global_strategy = st.sidebar.selectbox("默认备用策略", ["SMA Cross", "SMA Reversal", "RSI", "Bollinger"], index=0)
     
     for ticker in valid_tickers:
         # 1. 确定该股票使用什么策略 (锁定的 > 全局默认)
         active_strat = engine.get_active_strategy(ticker, global_strategy)
         
         # 2. 计算信号
-        df_res = engine.calculate_strategy(ticker, active_strat, default_params[active_strat])
+        df_res = engine.calculate_strategy(ticker, active_strat, default_params.get(active_strat, {}))
         signal_status = engine.get_signal_status(df_res)
         price = df_res['Close'].iloc[-1] if df_res is not None else 0
         
-        # 3. 智能诊断：检查策略是否适合当前行情
+        # 3. 智能诊断
         regime_info = engine.analyze_market_regime(ticker)
         recommended_strat = regime_info['Recommendation'] if regime_info else active_strat
         
@@ -84,7 +86,7 @@ with tab1:
             "当前价格": f"${price:.2f}",
             "当前模型": active_strat,
             "信号": signal_status,
-            "模型健康度": health_check, # 新增列：提示是否适合
+            "模型健康度": health_check,
             "YF代码": ticker
         })
     
@@ -101,7 +103,7 @@ with tab1:
         use_container_width=True,
         column_config={
             "模型健康度": st.column_config.TextColumn("模型诊断", help="如果不匹配，说明当前市场走势可能不适合该策略"),
-            "YF代码": None # 隐藏列
+            "YF代码": None
         }
     )
     
@@ -131,51 +133,46 @@ with tab2:
     with col_sel:
         st.subheader("个股诊断")
         selected_asset = st.radio("选择资产进行分析", [d['代码'] for d in dashboard_data])
-        # 反查 YF Ticker
         sel_yf = df_dash[df_dash['代码'] == selected_asset]['YF代码'].iloc[0]
         
     with col_detail:
         if sel_yf:
-            # 1. 运行市场体制分析
             regime = engine.analyze_market_regime(sel_yf)
             
             if regime:
-                # 显示诊断卡片
                 c1, c2, c3 = st.columns(3)
                 c1.metric("趋势强度 (ADX)", f"{regime['ADX']:.1f}", help=">25 为强趋势")
                 c2.metric("市场状态", regime['Regime'])
                 c3.metric("AI 推荐模型", regime['Recommendation'])
                 
-                # 2. 策略选择与锁定
                 st.markdown("#### 🛠️ 模型配置")
                 
                 current_fixed = engine.get_active_strategy(sel_yf, "无 (跟随默认)")
                 
                 col_setting, col_btn = st.columns([2, 1])
                 with col_setting:
-                    # 默认选中推荐的策略
                     try:
-                        idx = ["SMA Cross", "RSI", "Bollinger"].index(regime['Recommendation'])
+                        # 优先推荐 AI 的建议
+                        default_idx = ["SMA Cross", "SMA Reversal", "RSI", "Bollinger"].index(regime['Recommendation'])
                     except:
-                        idx = 0
-                    preview_strat = st.selectbox("预览策略效果", ["SMA Cross", "RSI", "Bollinger"], index=idx)
+                        default_idx = 0
+                    preview_strat = st.selectbox("预览策略效果", ["SMA Cross", "SMA Reversal", "RSI", "Bollinger"], index=default_idx)
                 
                 with col_btn:
-                    st.write("") # Spacer
+                    st.write("") 
                     st.write("") 
                     if st.button(f"🔒 锁定模型: {preview_strat}"):
                         engine.save_strategy_config(sel_yf, preview_strat)
                         st.toast(f"已将 {selected_asset} 锁定为 {preview_strat} 模型！", icon="✅")
                         st.rerun()
 
-                # 显示当前锁定状态
-                if current_fixed in ["SMA Cross", "RSI", "Bollinger"]:
+                if current_fixed in ["SMA Cross", "SMA Reversal", "RSI", "Bollinger"]:
                     st.caption(f"当前该股票已锁定为: **{current_fixed}**")
                 else:
                     st.caption("当前跟随全局默认策略")
 
-                # 3. 图表可视化
-                df_chart = engine.calculate_strategy(sel_yf, preview_strat, default_params[preview_strat])
+                # 图表可视化
+                df_chart = engine.calculate_strategy(sel_yf, preview_strat, default_params.get(preview_strat, {}))
                 
                 fig = go.Figure()
                 fig.add_trace(go.Candlestick(
@@ -183,15 +180,13 @@ with tab2:
                     low=df_chart['Low'], close=df_chart['Close'], name='Price'
                 ))
                 
-                # 根据预览的策略画线
-                if preview_strat == "SMA Cross":
-                    fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SMA_S'], line=dict(color='orange'), name='SMA Short'))
-                    fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SMA_L'], line=dict(color='blue'), name='SMA Long'))
-                elif preview_strat == "Bollinger":
-                    # 简单画一下上轨下轨示意
-                    pass # 可以根据需要添加布林带轨道，目前保持K线清爽
+                # 适配 SMA 和 SMA Reversal 的画图
+                if preview_strat in ["SMA Cross", "SMA Reversal"]:
+                    if 'SMA_S' in df_chart.columns:
+                        fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SMA_S'], line=dict(color='orange', width=1.5), name='快线'))
+                    if 'SMA_L' in df_chart.columns:
+                        fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SMA_L'], line=dict(color='blue', width=1.5), name='慢线'))
                 
-                # 标记买卖点
                 buys = df_chart[df_chart['Signal'] == 1]
                 sells = df_chart[df_chart['Signal'] == -1]
                 fig.add_trace(go.Scatter(x=buys.index, y=buys['Close'], mode='markers', marker=dict(symbol='triangle-up', size=12, color='green'), name='Buy'))
@@ -208,7 +203,6 @@ with tab2:
 # ==========================
 with tab3:
     st.write("这里可以调整各策略的默认参数（影响所有未锁定参数的股票）。")
-    # 这里可以放之前的参数输入框，为了界面整洁，暂时隐藏或按需添加
     if st.button("🧹 清除所有缓存 (调试用)"):
         st.cache_data.clear()
         st.success("已清除")
