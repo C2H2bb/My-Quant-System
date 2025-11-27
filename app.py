@@ -32,42 +32,41 @@ engine.load_portfolio(csv_source)
 def get_market_data_cached(_engine_trigger):
     return engine.fetch_data_automatically()
 
-with st.spinner("正在同步行情..."):
+with st.spinner("正在分析全球市场数据..."):
     status = engine.fetch_data_automatically()
 
-# --- ⚠️ 纳指崩盘预警雷达 (NEW) ---
-with st.expander("⚠️ 纳指崩盘预警雷达 (Nasdaq Crash Radar)", expanded=True):
+# --- ⚠️ 纳指生命周期雷达 (NEW) ---
+with st.expander("📡 纳指全景监控雷达 (Nasdaq Market Cycle)", expanded=True):
     risk_data = engine.analyze_nasdaq_crash_risk()
     
     if risk_data:
-        prob = risk_data['Probability']
-        
-        # 进度条颜色逻辑
-        bar_color = "green"
-        if prob > 40: bar_color = "orange"
-        if prob > 70: bar_color = "red"
-        
-        c1, c2, c3 = st.columns([2, 1, 1])
+        # 状态栏背景色逻辑
+        phase = risk_data['Phase']
+        bg_color = "#f0f2f6" # 默认灰
+        if "上涨" in phase: bg_color = "#d1e7dd" # 绿
+        elif "恐慌" in phase or "熊市" in phase: bg_color = "#f8d7da" # 红
+        elif "修复" in phase or "过热" in phase: bg_color = "#fff3cd" # 黄
+
+        st.markdown(f"""
+        <div style="background-color: {bg_color}; padding: 15px; border-radius: 10px; margin-bottom: 15px;">
+            <h3 style="margin:0; color: #333;">{phase}</h3>
+            <p style="margin:5px 0 0 0; color: #555;">{risk_data['Description']}</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        c1, c2, c3, c4 = st.columns(4)
         
         with c1:
-            st.subheader(f"崩盘/大跌概率: {prob:.1f}%")
-            st.progress(prob / 100)
-            
-            if prob < 40:
-                st.success("当前市场情绪稳定，适合持仓。")
-            elif prob < 70:
-                st.warning("风险升高！波动率上升或均线乖离过大，建议减仓或对冲。")
-            else:
-                st.error("🚨 极高风险！崩盘预警生效，建议清仓或反向做空！")
-
+            st.metric("纳指现价", f"${risk_data['Price']:.2f}", f"{risk_data['DD_ATH']:.2f}% (距高点)")
         with c2:
-            st.metric("纳指波动率 (VXN)", f"{risk_data['VXN']:.2f}", help="类似VIX，超过30代表极度恐慌")
-            st.metric("RSI (14)", f"{risk_data['RSI']:.1f}", help=">75 超买，<30 超卖")
-            
+            st.metric("恐慌指数 (VXN)", f"{risk_data['VXN']:.2f}", help=">30 极度恐慌, <15 贪婪")
         with c3:
-            trend_icon = "❌ 跌破" if risk_data['Trend_Broken'] else "✅ 支撑"
-            st.metric("50日线趋势", trend_icon)
-            st.metric("预估最大回撤", f"{risk_data['Potential_Drop']:.1f}%", f"目标价: ${risk_data['Target_Price']:.0f}")
+            st.metric("RSI (14)", f"{risk_data['RSI']:.1f}", help=">70 超买, <30 超卖")
+        with c4:
+            tnx_val = f"{risk_data['TNX']:.2f}%" if risk_data['TNX'] > 0 else "N/A"
+            st.metric("10年美债收益率", tnx_val, help="收益率飙升通常利空科技股")
+            
+        st.caption(f"📊 长期均线乖离率: {risk_data['SMA200_Bias']:.1f}% (正值代表在年线上方，负值代表破位)")
     else:
         st.info("正在获取纳指数据，请稍候...")
 
