@@ -3,7 +3,7 @@ import yfinance as yf
 import pandas_ta as ta
 import requests
 import streamlit as st
-import os
+import time
 
 # Telegram 推送函数
 def send_telegram_message(message):
@@ -15,7 +15,7 @@ def send_telegram_message(message):
         send_text = f'https://api.telegram.org/bot{bot_token}/sendMessage?chat_id={chat_id}&parse_mode=Markdown&text={message}'
         requests.get(send_text, timeout=5)
     except Exception:
-        pass # 如果没配置或发送失败，静默处理，不卡死主程序
+        pass 
 
 class QuantEngine:
     def __init__(self):
@@ -29,149 +29,175 @@ class QuantEngine:
             # 清洗列名，去除空格
             df.columns = [c.strip() for c in df.columns]
             
-            # 简单的列名检查
             if 'Symbol' not in df.columns:
                 return False, "CSV 缺少 'Symbol' 列"
 
             portfolio_list = []
             for index, row in df.iterrows():
-                symbol = str(row['Symbol']).strip()
+                raw_symbol = row['Symbol']
                 
-                # 跳过无效行
+                # --- 强力清洗无效数据 ---
+                # 1. 如果是真正的空值 (NaN/None)
+                if pd.isna(raw_symbol):
+                    continue
+                
+                symbol = str(raw_symbol).strip()
+                
+                # 2. 如果是字符串 'nan' 或空字符串
                 if not symbol or symbol.lower() == 'nan':
                     continue
                 
-                # 尝试获取数量，没有则默认为 0
+                # 获取其他元数据
+                name = str(row.get('Name', 'Unknown'))
+                exchange = str(row.get('Exchange', ''))
+                currency = str(row.get('Currency', '')) # 获取货币列辅助判断
+                
+                # 数量处理
                 try:
                     qty = float(row.get('Quantity', 0))
                 except:
                     qty = 0.0
-
-                # 映射 Yahoo Finance 代码
-                yf_ticker = self._map_symbol(symbol, str(row.get('Exchange', '')), str(row.get('Name', '')))
                 
+                # 映射 Yahoo Finance 代码
+                yf_ticker = self._map_symbol(symbol, exchange, name, currency)
+                
+                # 再次检查映射后的代码是否有效
+                if 'nan' in yf_ticker.lower():
+                    continue
+
                 portfolio_list.append({
                     "Symbol": symbol,
                     "YF_Ticker": yf_ticker,
                     "Quantity": qty,
-                    "Name": row.get('Name', symbol)
+                    "Name": name
                 })
             
+            if not portfolio_list:
+                return False, "文件中未找到有效的股票代码"
+
             self.portfolio = pd.DataFrame(portfolio_list)
             return True, f"✅ 已加载 {len(self.portfolio)} 个持仓"
         except Exception as e:
             return False, f"❌ 文件加载失败: {str(e)}"
 
-    def _map_symbol(self, symbol, exchange, name):
-        """将 Wealthsimple/本地代码映射为 Yahoo Finance 代码"""
-        # 1. 已经是 Yahoo 格式 (包含点号或横线，且不是 CDR)
-        if '.' in symbol and 'TO' in symbol: return symbol
+    def _map_symbol(self, symbol, exchange, name, currency):
+        """智能映射 Ticker (增强版)"""
+        symbol_upper = symbol.upper()
         
-        # 2. 加拿大股票 (TSX/NEO)
-        if 'CDR' in name or 'NEO' in exchange:
-            return f"{symbol.replace('.', '-')}.NE"
-        if 'TSX' in exchange or 'Toronto' in exchange:
-            return f"{symbol.replace('.', '-')}.TO"
+        # 1. 已经是 Yahoo 格式 (包含 .TO, .NE 等)
+        if '.' in symbol_upper and ('TO' in symbol_upper or 'NE' in symbol_upper):
+            return symbol_upper
         
-        # 3. 加密货币 (通常没有交易所信息或特殊标记)
-        if not exchange or exchange == 'nan':
-            # 简单猜测，如果是常见的 BTC/ETH
-            if symbol in ['BTC', 'ETH', 'SOL']: return f"{symbol}-USD"
+        # 2. 常见加股 ETF 特殊处理 (如 FEQT, XEQT, VFV 等)
+        # 如果货币是 CAD 且没有后缀，尝试加 .TO
+        is_cad = currency.upper() == 'CAD'
+        
+        if 'CDR' in name or 'NEO' in exchange or 'CBOE' in exchange:
+            return f"{symbol_upper.replace('.', '-')}.NE"
+            
+        if 'TSX' in exchange or 'TORONTO' in exchange.upper():
+            return f"{symbol_upper.replace('.', '-')}.TO"
+            
+        # 如果没明确写交易所，但货币是 CAD，默认尝试 .TO
+        if is_cad and '.' not in symbol_upper:
+             return f"{symbol_upper}.TO"
+        
+        # 3. 加密货币 (通常 Symbol 是 BTC, ETH 且 Exchange 为空)
+        if (not exchange or exchange.lower() == 'nan') and symbol_upper in ['BTC', 'ETH', 'SOL', 'DOGE']:
+            return f"{symbol_upper}-USD"
             
         # 4. 美股 (默认)
-        return symbol
+        return symbol_upper
 
     def fetch_data_automatically(self):
-        """自动下载数据 (带缓存优化)"""
+        """自动下载数据 (带重试和过滤)"""
         if self.portfolio.empty:
-            return "持仓为空，跳过下载"
+            return "持仓为空"
 
         tickers = self.portfolio['YF_Ticker'].unique().tolist()
-        valid_tickers = [t for t in tickers if t and 'nan' not in t.lower()]
+        # 最终过滤：移除任何包含 'NAN' 的代码
+        valid_tickers = [t for t in tickers if t and 'NAN' not in t.upper()]
         
         if not valid_tickers:
-            return "无有效股票代码"
+            return "无有效代码"
 
-        # 使用 yfinance 批量下载
+        ticker_str = " ".join(valid_tickers)
+        print(f"Fetching: {ticker_str}") # 用于调试
+        
         try:
-            ticker_str = " ".join(valid_tickers)
+            # 下载数据，增加线程
             data = yf.download(ticker_str, period="1y", group_by='ticker', auto_adjust=True, threads=True)
             
             self.market_data = {}
             
+            # 处理数据
             for t in valid_tickers:
-                # 提取单个股票数据
+                df = pd.DataFrame()
                 if len(valid_tickers) == 1:
                     df = data.copy()
                 else:
                     try:
                         df = data[t].copy()
                     except KeyError:
+                        # 某个股票下载失败，不影响其他的
                         continue
                 
-                # 清洗无效数据
+                # 删除全为空的行
                 df = df.dropna(how='all')
-                if not df.empty:
+                
+                # 只有当数据行数足够计算指标时才保存 (例如至少20行)
+                if not df.empty and len(df) > 20:
                     self.market_data[t] = df
             
-            return f"✅ 成功更新 {len(self.market_data)} 只股票的行情"
+            return f"✅ 成功更新 {len(self.market_data)}/{len(valid_tickers)} 只股票"
         except Exception as e:
-            return f"❌ 数据下载异常: {e}"
+            return f"❌ 下载部分失败: {e}"
 
     def calculate_strategy(self, ticker, strategy_name, params):
-        """计算策略指标，返回处理后的 DataFrame"""
+        """计算策略指标"""
         if ticker not in self.market_data:
             return None
         
         df = self.market_data[ticker].copy()
-        if df.empty: return None
-
+        # 确保按日期升序
+        df = df.sort_index()
+        
         try:
-            # --- 策略 1: 双均线 (SMA) ---
             if strategy_name == "SMA Cross":
                 s = params.get('short', 10)
                 l = params.get('long', 50)
                 df['SMA_S'] = ta.sma(df['Close'], length=s)
                 df['SMA_L'] = ta.sma(df['Close'], length=l)
                 
-                # 信号: 1=Buy, -1=Sell
                 df['Signal'] = 0
-                # 只有当短线大于长线时
                 df.loc[df['SMA_S'] > df['SMA_L'], 'Signal'] = 1
                 df.loc[df['SMA_S'] < df['SMA_L'], 'Signal'] = -1
-                
-            # --- 策略 2: RSI ---
+
             elif strategy_name == "RSI":
                 length = params.get('length', 14)
                 df['RSI'] = ta.rsi(df['Close'], length=length)
-                
                 df['Signal'] = 0
-                df.loc[df['RSI'] < 30, 'Signal'] = 1  # 超卖 -> 买
-                df.loc[df['RSI'] > 70, 'Signal'] = -1 # 超买 -> 卖
+                df.loc[df['RSI'] < 30, 'Signal'] = 1
+                df.loc[df['RSI'] > 70, 'Signal'] = -1
 
-            # --- 策略 3: 布林带 (Bollinger) ---
             elif strategy_name == "Bollinger":
                 length = params.get('length', 20)
-                # pandas_ta 的 bbands 返回多列
                 bb = ta.bbands(df['Close'], length=length, std=2)
                 if bb is not None:
                     df = pd.concat([df, bb], axis=1)
-                    # 动态获取列名 (BBL_20_2.0, BBU_20_2.0 等)
                     lower_col = bb.columns[0] 
                     upper_col = bb.columns[2]
-                    
                     df['Signal'] = 0
                     df.loc[df['Close'] < df[lower_col], 'Signal'] = 1
                     df.loc[df['Close'] > df[upper_col], 'Signal'] = -1
 
-        except Exception as e:
-            print(f"Strategy calc error for {ticker}: {e}")
+        except Exception:
             return None
 
         return df
 
     def get_signal_status(self, df, strategy_name):
-        """解析最后一日信号为文字"""
+        """解析信号状态"""
         if df is None or 'Signal' not in df.columns:
             return "No Data"
         
