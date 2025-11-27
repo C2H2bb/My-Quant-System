@@ -91,58 +91,52 @@ class QuantEngine:
             tickers = "QQQ ^VXN"
             data = yf.download(tickers, period="2y", group_by='ticker', auto_adjust=True, threads=True)
             
-            df_qqq = data['QQQ'].copy().dropna()
-            df_vxn = data['^VXN'].copy().dropna()
+            df_qqq = pd.DataFrame()
+            df_vxn = pd.DataFrame()
+
+            # yfinance 返回多层索引的处理
+            try:
+                df_qqq = data['QQQ'].copy().dropna()
+                df_vxn = data['^VXN'].copy().dropna()
+            except KeyError:
+                 # 备用处理，以防 yfinance 结构变化
+                 pass
             
             if df_qqq.empty or df_vxn.empty:
                 return None
 
             # 1. 波动率风险 (Fear Factor)
             current_vxn = df_vxn['Close'].iloc[-1]
-            # VXN > 30 为极度恐慌，VXN < 15 为极度贪婪(自满)
-            # 风险分：VXN越高，崩盘概率越大（实际上崩盘已经发生或正在发生）
-            # 但如果你想预测崩盘前夕，往往是 VXN 突然从低位跳起
             vxn_score = min((current_vxn / 40) * 100, 100) 
 
             # 2. 均线乖离风险 (Bubble Factor)
-            # 价格偏离 200日线越远，回归风险越大
             sma200 = ta.sma(df_qqq['Close'], length=200).iloc[-1]
             current_price = df_qqq['Close'].iloc[-1]
             deviation = (current_price - sma200) / sma200
-            # 假设偏离 20% 为高风险
             bubble_score = min(max(deviation / 0.20 * 100, 0), 100)
             
             # 3. 动能耗尽风险 (Technical Weakness)
-            # 如果跌破 50日线，是个坏兆头
             sma50 = ta.sma(df_qqq['Close'], length=50).iloc[-1]
             trend_score = 100 if current_price < sma50 else 0
             
             # 4. RSI 极端值
             rsi = ta.rsi(df_qqq['Close'], length=14).iloc[-1]
-            rsi_score = 0
-            if rsi > 75: rsi_score = 80 # 超买，回调风险大
-            if rsi < 30: rsi_score = 20 # 超卖，可能已经崩了
-
+            
             # --- 综合概率计算 ---
-            # 权重: 波动率 30%, 泡沫程度 40%, 趋势破位 30%
             total_risk_prob = (vxn_score * 0.3) + (bubble_score * 0.4) + (trend_score * 0.3)
-            
-            # 修正：如果是RSI超买导致的风险，适当加分
             if rsi > 75: total_risk_prob += 10
-            
             total_risk_prob = min(total_risk_prob, 100)
 
             # --- 回撤幅度预测 ---
-            # 悲观预测：回归到 SMA200
             drawdown_target = sma200
             drawdown_pct = (drawdown_target - current_price) / current_price * 100
             
-            # 如果已经在 SMA200 之下，则看下一个支撑（简单按 recent low 或 Bollinger Lower）
             if current_price < sma200:
                 bb = ta.bbands(df_qqq['Close'], length=50, std=2)
-                lower_band = bb.iloc[-1, 0] # BBL
-                drawdown_target = lower_band
-                drawdown_pct = (drawdown_target - current_price) / current_price * 100
+                if bb is not None:
+                    lower_band = bb.iloc[-1, 0] 
+                    drawdown_target = lower_band
+                    drawdown_pct = (drawdown_target - current_price) / current_price * 100
 
             return {
                 "Probability": total_risk_prob,
