@@ -35,6 +35,43 @@ def get_market_data_cached(_engine_trigger):
 with st.spinner("正在同步行情..."):
     status = engine.fetch_data_automatically()
 
+# --- ⚠️ 纳指崩盘预警雷达 (NEW) ---
+with st.expander("⚠️ 纳指崩盘预警雷达 (Nasdaq Crash Radar)", expanded=True):
+    risk_data = engine.analyze_nasdaq_crash_risk()
+    
+    if risk_data:
+        prob = risk_data['Probability']
+        
+        # 进度条颜色逻辑
+        bar_color = "green"
+        if prob > 40: bar_color = "orange"
+        if prob > 70: bar_color = "red"
+        
+        c1, c2, c3 = st.columns([2, 1, 1])
+        
+        with c1:
+            st.subheader(f"崩盘/大跌概率: {prob:.1f}%")
+            st.progress(prob / 100)
+            
+            if prob < 40:
+                st.success("当前市场情绪稳定，适合持仓。")
+            elif prob < 70:
+                st.warning("风险升高！波动率上升或均线乖离过大，建议减仓或对冲。")
+            else:
+                st.error("🚨 极高风险！崩盘预警生效，建议清仓或反向做空！")
+
+        with c2:
+            st.metric("纳指波动率 (VXN)", f"{risk_data['VXN']:.2f}", help="类似VIX，超过30代表极度恐慌")
+            st.metric("RSI (14)", f"{risk_data['RSI']:.1f}", help=">75 超买，<30 超卖")
+            
+        with c3:
+            trend_icon = "❌ 跌破" if risk_data['Trend_Broken'] else "✅ 支撑"
+            st.metric("50日线趋势", trend_icon)
+            st.metric("预估最大回撤", f"{risk_data['Potential_Drop']:.1f}%", f"目标价: ${risk_data['Target_Price']:.0f}")
+    else:
+        st.info("正在获取纳指数据，请稍候...")
+
+
 # --- 默认参数 ---
 default_params = {
     'SMA Cross': {'short': 10, 'long': 50},
@@ -60,11 +97,9 @@ with tab1:
         signal_status = engine.get_signal_status(df_res)
         price = df_res['Close'].iloc[-1] if df_res is not None else 0
         
-        # 简单检查：如果推荐的策略和当前策略严重不符
         regime = engine.analyze_market_regime(ticker)
         health = "✅"
         if regime and regime['Recommendation'] != active_strat:
-             # 如果推荐反转但你在用顺势，或者反之
              if "SMA" in active_strat and "SMA" in regime['Recommendation'] and active_strat != regime['Recommendation']:
                  health = f"⚠️ 建议: {regime['Recommendation']}"
              elif "Bollinger" in regime['Recommendation'] and "SMA" in active_strat:
@@ -122,7 +157,6 @@ with tab2:
             if regime:
                 st.markdown(f"### 📊 {selected_asset} 市场体检报告")
                 
-                # --- 核心升级：分周期展示 ---
                 c1, c2, c3 = st.columns(3)
                 c1.metric("近1月状态", regime['1M']['Desc'], f"{regime['1M']['Val']*100:.1f}%")
                 c2.metric("近半年状态", regime['6M']['Desc'], f"{regime['6M']['Val']*100:.1f}%")
@@ -130,7 +164,6 @@ with tab2:
                 
                 st.info(f"💡 **AI 综合建议**：当前市场波动率 {regime['Volatility']:.1f}%，ADX {regime['ADX']:.1f}。推荐使用 **{regime['Recommendation']}** 模型。")
 
-                # 模型配置区
                 st.divider()
                 st.markdown("#### 🛠️ 策略沙盒")
                 
@@ -156,7 +189,6 @@ with tab2:
                 else:
                     st.caption("当前使用全局默认策略")
 
-                # 图表
                 df_chart = engine.calculate_strategy(sel_yf, preview_strat, default_params.get(preview_strat, {}))
                 fig = go.Figure()
                 fig.add_trace(go.Candlestick(x=df_chart.index, open=df_chart['Open'], high=df_chart['High'], low=df_chart['Low'], close=df_chart['Close'], name='K线'))
@@ -164,11 +196,7 @@ with tab2:
                 if "SMA" in preview_strat:
                     fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SMA_S'], line=dict(color='orange'), name='Short'))
                     fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SMA_L'], line=dict(color='blue'), name='Long'))
-                elif "Bollinger" in preview_strat and df_chart.shape[1] > 6:
-                     # 简单画布林带上下轨，pandas_ta列名通常在最后
-                    pass 
-
-                # 信号点
+                
                 buys = df_chart[df_chart['Signal'] == 1]
                 sells = df_chart[df_chart['Signal'] == -1]
                 fig.add_trace(go.Scatter(x=buys.index, y=buys['Close'], mode='markers', marker=dict(symbol='triangle-up', size=12, color='green'), name='Buy'))
