@@ -23,7 +23,6 @@ class QuantEngine:
         self.config_file = "strategy_config.json"
         self.strategy_map = self.load_strategy_config()
 
-    # --- 数据加载 ---
     def load_portfolio(self, file_path_or_buffer):
         try:
             df = pd.read_csv(file_path_or_buffer)
@@ -67,6 +66,7 @@ class QuantEngine:
         valid_tickers = sorted(list(set([t for t in tickers if t and 'NAN' not in t.upper()])))
         if not valid_tickers: return "无有效代码"
         try:
+            # 下载2年数据以计算长期指标
             data = yf.download(" ".join(valid_tickers), period="2y", group_by='ticker', auto_adjust=True, threads=True)
             self.market_data = {}
             for t in valid_tickers:
@@ -80,54 +80,65 @@ class QuantEngine:
             return f"✅ 数据更新完成 ({len(self.market_data)}/{len(valid_tickers)})"
         except Exception as e: return f"❌ 下载异常: {e}"
 
-    # --- 智能分析与策略计算 ---
+    # --- 智能分析与策略计算 (重大升级) ---
 
     def analyze_market_regime(self, ticker):
-        """判断股票当前处于什么状态 (趋势 vs 震荡)"""
+        """
+        多维度市场状态诊断
+        """
         if ticker not in self.market_data: return None
         df = self.market_data[ticker].copy()
         
-        # 1. 计算 ADX (趋势强度)
+        # 1. 基础指标计算
         try:
+            # ADX 趋势强度
             adx_df = ta.adx(df['High'], df['Low'], df['Close'], length=14)
-            current_adx = 0
-            if adx_df is not None and not adx_df.empty:
-                current_adx = adx_df['ADX_14'].iloc[-1]
-        except:
-            current_adx = 0
-        
-        # 2. 计算 ATR (波动率)
-        try:
+            current_adx = adx_df['ADX_14'].iloc[-1] if adx_df is not None else 0
+            
+            # ATR 波动率
             atr = ta.atr(df['High'], df['Low'], df['Close'], length=14).iloc[-1]
             price = df['Close'].iloc[-1]
-            volatility = (atr / price) * 100
-        except:
-            volatility = 0
-
-        # 3. 判定逻辑
-        # 逻辑更新：如果趋势很强(ADX高)，推荐顺势(SMA Cross)
-        # 如果趋势弱，推荐震荡策略(Bollinger)或反向策略(SMA Reversal)
-        if current_adx > 25:
-            trend_status = "强趋势 🔥"
-            recommendation = "SMA Cross" 
-        elif current_adx < 20:
-            trend_status = "弱势/盘整 💤"
-            recommendation = "SMA Reversal" # 震荡市推荐反向操作
-        else:
-            trend_status = "趋势不明 🤔"
-            recommendation = "Bollinger"
+            volatility_pct = (atr / price) * 100
             
+            # 计算各周期收益率
+            days = len(df)
+            ret_1m = df['Close'].pct_change(21).iloc[-1] if days > 21 else 0
+            ret_6m = df['Close'].pct_change(126).iloc[-1] if days > 126 else 0
+            ret_1y = df['Close'].pct_change(252).iloc[-1] if days > 252 else 0
+            
+        except:
+            return None
+
+        # 2. 状态判定辅助函数
+        def get_status_desc(ret):
+            if ret >= 0.20: return "🚀 强势上涨"
+            if ret >= 0.05: return "📈 稳步上涨"
+            if ret <= -0.20: return "📉 暴风骤跌" # 对应 DJT 等暴跌情况
+            if ret <= -0.05: return "💸 轻微回撤"
+            return "🦀 横盘震荡"
+
+        # 3. 综合推荐逻辑
+        # 如果短期暴跌或暴涨，可能是反转机会
+        if ret_1m <= -0.15:
+            recommendation = "SMA Reversal" # 暴跌博反弹
+        elif ret_1m >= 0.20:
+            recommendation = "SMA Cross" # 暴涨顺势而为
+        elif current_adx < 20:
+            recommendation = "Bollinger" # 震荡市高抛低吸
+        else:
+            recommendation = "SMA Cross" # 默认趋势策略
+
         return {
             "ADX": current_adx,
-            "Volatility": volatility,
-            "Regime": trend_status,
+            "Volatility": volatility_pct,
+            "1M": {"Val": ret_1m, "Desc": get_status_desc(ret_1m)},
+            "6M": {"Val": ret_6m, "Desc": get_status_desc(ret_6m)},
+            "1Y": {"Val": ret_1y, "Desc": get_status_desc(ret_1y)},
             "Recommendation": recommendation
         }
 
     def calculate_strategy(self, ticker, strategy_name, params):
-        """
-        计算策略指标
-        """
+        """计算策略指标"""
         if ticker not in self.market_data: return None
         df = self.market_data[ticker].copy().sort_index()
         
@@ -139,58 +150,49 @@ class QuantEngine:
             df['ADX_14'] = 0
 
         try:
-            df['Signal'] = 0 # 默认为0
+            df['Signal'] = 0 
 
-            # --- 策略 1: SMA Cross (顺势) ---
+            # --- SMA Cross (顺势) ---
             if strategy_name == "SMA Cross":
-                s = params.get('short', 10)
-                l = params.get('long', 50)
+                s = params.get('short', 10); l = params.get('long', 50)
                 df['SMA_S'] = ta.sma(df['Close'], length=s)
                 df['SMA_L'] = ta.sma(df['Close'], length=l)
                 
-                prev_s = df['SMA_S'].shift(1)
-                prev_l = df['SMA_L'].shift(1)
-                curr_s = df['SMA_S']
-                curr_l = df['SMA_L']
+                prev_s = df['SMA_S'].shift(1); prev_l = df['SMA_L'].shift(1)
+                curr_s = df['SMA_S']; curr_l = df['SMA_L']
                 
                 golden_cross = (prev_s < prev_l) & (curr_s > curr_l)
                 death_cross = (prev_s > prev_l) & (curr_s < curr_l)
-                strong_trend = df['ADX_14'] > 20
+                strong_trend = df['ADX_14'] > 20 # 必须有趋势
                 
                 df.loc[golden_cross & strong_trend, 'Signal'] = 1
                 df.loc[death_cross & strong_trend, 'Signal'] = -1
 
-            # --- 策略 2: SMA Reversal (反向/逆势) ---
-            # 你的“神奇反向”策略：死叉买入，金叉卖出
+            # --- SMA Reversal (反向/逆势) ---
             elif strategy_name == "SMA Reversal":
-                s = params.get('short', 10)
-                l = params.get('long', 50)
+                s = params.get('short', 10); l = params.get('long', 50)
                 df['SMA_S'] = ta.sma(df['Close'], length=s)
                 df['SMA_L'] = ta.sma(df['Close'], length=l)
                 
-                prev_s = df['SMA_S'].shift(1)
-                prev_l = df['SMA_L'].shift(1)
-                curr_s = df['SMA_S']
-                curr_l = df['SMA_L']
+                prev_s = df['SMA_S'].shift(1); prev_l = df['SMA_L'].shift(1)
+                curr_s = df['SMA_S']; curr_l = df['SMA_L']
                 
                 golden_cross = (prev_s < prev_l) & (curr_s > curr_l)
                 death_cross = (prev_s > prev_l) & (curr_s < curr_l)
                 
-                # 这里我们依然使用 ADX 过滤，确保是有力度的反转信号
-                strong_trend = df['ADX_14'] > 20 
-                
-                # 逻辑反转！
-                df.loc[death_cross & strong_trend, 'Signal'] = 1  # 死叉 -> 买入 (抄底)
-                df.loc[golden_cross & strong_trend, 'Signal'] = -1 # 金叉 -> 卖出 (逃顶)
+                # 逆势策略也需要在一定波动率下才有效，或者反过来思考
+                # 这里简单逻辑：金叉卖，死叉买
+                df.loc[death_cross, 'Signal'] = 1  # 死叉抄底
+                df.loc[golden_cross, 'Signal'] = -1 # 金叉逃顶
 
-            # --- 策略 3: RSI ---
+            # --- RSI ---
             elif strategy_name == "RSI":
                 length = params.get('length', 14)
                 df['RSI'] = ta.rsi(df['Close'], length=length)
                 df.loc[df['RSI'] < 30, 'Signal'] = 1
                 df.loc[df['RSI'] > 70, 'Signal'] = -1
 
-            # --- 策略 4: Bollinger ---
+            # --- Bollinger ---
             elif strategy_name == "Bollinger":
                 length = params.get('length', 20)
                 bb = ta.bbands(df['Close'], length=length, std=2)
@@ -200,21 +202,15 @@ class QuantEngine:
                     df.loc[df['Close'] < df[lower], 'Signal'] = 1
                     df.loc[df['Close'] > df[upper], 'Signal'] = -1
 
-        except Exception as e:
-            print(f"Error calc strategy for {ticker}: {e}")
-            return None
-
+        except Exception: return None
         return df
 
     def get_signal_status(self, df):
         if df is None or 'Signal' not in df.columns: return "No Data"
         last_signals = df[df['Signal'] != 0]
-        if last_signals.empty:
-            return "⚪ 无信号"
-        
+        if last_signals.empty: return "⚪ 无信号"
         last_sig = last_signals['Signal'].iloc[-1]
         last_date = last_signals.index[-1].strftime('%Y-%m-%d')
-        
         if last_sig == 1: return f"🟢 买入 ({last_date})"
         elif last_sig == -1: return f"🔴 卖出 ({last_date})"
         return "⚪ 观望"
