@@ -295,7 +295,4 @@ class QuantEngine:
 
     def save_strategy_config(self, ticker, strategy):
         self.strategy_map[ticker] = strategy
-        with open(self.config_file, 'w') as f: json.dump(self.strategy_map, f)
-            
-    def get_active_strategy(self, ticker, default_strategy):
-        return self.strategy_map.get(ticker, default_strategy)
+        with open(self.config_file, 'w') as f:
