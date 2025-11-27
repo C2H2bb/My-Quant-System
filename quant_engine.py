@@ -6,6 +6,7 @@ import streamlit as st
 import time
 import json
 import os
+import numpy as np
 
 def send_telegram_message(message):
     try:
@@ -23,6 +24,7 @@ class QuantEngine:
         self.config_file = "strategy_config.json"
         self.strategy_map = self.load_strategy_config()
 
+    # --- 数据加载 ---
     def load_portfolio(self, file_path_or_buffer):
         try:
             df = pd.read_csv(file_path_or_buffer)
@@ -66,7 +68,6 @@ class QuantEngine:
         valid_tickers = sorted(list(set([t for t in tickers if t and 'NAN' not in t.upper()])))
         if not valid_tickers: return "无有效代码"
         try:
-            # 下载2年数据以计算长期指标
             data = yf.download(" ".join(valid_tickers), period="2y", group_by='ticker', auto_adjust=True, threads=True)
             self.market_data = {}
             for t in valid_tickers:
@@ -80,53 +81,111 @@ class QuantEngine:
             return f"✅ 数据更新完成 ({len(self.market_data)}/{len(valid_tickers)})"
         except Exception as e: return f"❌ 下载异常: {e}"
 
-    # --- 智能分析与策略计算 (重大升级) ---
+    # --- 崩盘预警模块 (NEW) ---
+    def analyze_nasdaq_crash_risk(self):
+        """
+        分析纳指 (QQQ) 的崩盘风险
+        """
+        try:
+            # 获取 纳指ETF(QQQ) 和 纳指波动率(VXN)
+            tickers = "QQQ ^VXN"
+            data = yf.download(tickers, period="2y", group_by='ticker', auto_adjust=True, threads=True)
+            
+            df_qqq = data['QQQ'].copy().dropna()
+            df_vxn = data['^VXN'].copy().dropna()
+            
+            if df_qqq.empty or df_vxn.empty:
+                return None
 
+            # 1. 波动率风险 (Fear Factor)
+            current_vxn = df_vxn['Close'].iloc[-1]
+            # VXN > 30 为极度恐慌，VXN < 15 为极度贪婪(自满)
+            # 风险分：VXN越高，崩盘概率越大（实际上崩盘已经发生或正在发生）
+            # 但如果你想预测崩盘前夕，往往是 VXN 突然从低位跳起
+            vxn_score = min((current_vxn / 40) * 100, 100) 
+
+            # 2. 均线乖离风险 (Bubble Factor)
+            # 价格偏离 200日线越远，回归风险越大
+            sma200 = ta.sma(df_qqq['Close'], length=200).iloc[-1]
+            current_price = df_qqq['Close'].iloc[-1]
+            deviation = (current_price - sma200) / sma200
+            # 假设偏离 20% 为高风险
+            bubble_score = min(max(deviation / 0.20 * 100, 0), 100)
+            
+            # 3. 动能耗尽风险 (Technical Weakness)
+            # 如果跌破 50日线，是个坏兆头
+            sma50 = ta.sma(df_qqq['Close'], length=50).iloc[-1]
+            trend_score = 100 if current_price < sma50 else 0
+            
+            # 4. RSI 极端值
+            rsi = ta.rsi(df_qqq['Close'], length=14).iloc[-1]
+            rsi_score = 0
+            if rsi > 75: rsi_score = 80 # 超买，回调风险大
+            if rsi < 30: rsi_score = 20 # 超卖，可能已经崩了
+
+            # --- 综合概率计算 ---
+            # 权重: 波动率 30%, 泡沫程度 40%, 趋势破位 30%
+            total_risk_prob = (vxn_score * 0.3) + (bubble_score * 0.4) + (trend_score * 0.3)
+            
+            # 修正：如果是RSI超买导致的风险，适当加分
+            if rsi > 75: total_risk_prob += 10
+            
+            total_risk_prob = min(total_risk_prob, 100)
+
+            # --- 回撤幅度预测 ---
+            # 悲观预测：回归到 SMA200
+            drawdown_target = sma200
+            drawdown_pct = (drawdown_target - current_price) / current_price * 100
+            
+            # 如果已经在 SMA200 之下，则看下一个支撑（简单按 recent low 或 Bollinger Lower）
+            if current_price < sma200:
+                bb = ta.bbands(df_qqq['Close'], length=50, std=2)
+                lower_band = bb.iloc[-1, 0] # BBL
+                drawdown_target = lower_band
+                drawdown_pct = (drawdown_target - current_price) / current_price * 100
+
+            return {
+                "Probability": total_risk_prob,
+                "VXN": current_vxn,
+                "SMA200_Dev": deviation * 100,
+                "Price": current_price,
+                "Target_Price": drawdown_target,
+                "Potential_Drop": drawdown_pct,
+                "Trend_Broken": current_price < sma50,
+                "RSI": rsi
+            }
+
+        except Exception as e:
+            print(f"Risk calc error: {e}")
+            return None
+
+    # --- 智能分析与策略计算 ---
     def analyze_market_regime(self, ticker):
-        """
-        多维度市场状态诊断
-        """
         if ticker not in self.market_data: return None
         df = self.market_data[ticker].copy()
-        
-        # 1. 基础指标计算
         try:
-            # ADX 趋势强度
             adx_df = ta.adx(df['High'], df['Low'], df['Close'], length=14)
             current_adx = adx_df['ADX_14'].iloc[-1] if adx_df is not None else 0
-            
-            # ATR 波动率
             atr = ta.atr(df['High'], df['Low'], df['Close'], length=14).iloc[-1]
             price = df['Close'].iloc[-1]
             volatility_pct = (atr / price) * 100
-            
-            # 计算各周期收益率
             days = len(df)
             ret_1m = df['Close'].pct_change(21).iloc[-1] if days > 21 else 0
             ret_6m = df['Close'].pct_change(126).iloc[-1] if days > 126 else 0
             ret_1y = df['Close'].pct_change(252).iloc[-1] if days > 252 else 0
-            
-        except:
-            return None
+        except: return None
 
-        # 2. 状态判定辅助函数
         def get_status_desc(ret):
             if ret >= 0.20: return "🚀 强势上涨"
             if ret >= 0.05: return "📈 稳步上涨"
-            if ret <= -0.20: return "📉 暴风骤跌" # 对应 DJT 等暴跌情况
+            if ret <= -0.20: return "📉 暴风骤跌"
             if ret <= -0.05: return "💸 轻微回撤"
             return "🦀 横盘震荡"
 
-        # 3. 综合推荐逻辑
-        # 如果短期暴跌或暴涨，可能是反转机会
-        if ret_1m <= -0.15:
-            recommendation = "SMA Reversal" # 暴跌博反弹
-        elif ret_1m >= 0.20:
-            recommendation = "SMA Cross" # 暴涨顺势而为
-        elif current_adx < 20:
-            recommendation = "Bollinger" # 震荡市高抛低吸
-        else:
-            recommendation = "SMA Cross" # 默认趋势策略
+        if ret_1m <= -0.15: recommendation = "SMA Reversal"
+        elif ret_1m >= 0.20: recommendation = "SMA Cross"
+        elif current_adx < 20: recommendation = "Bollinger"
+        else: recommendation = "SMA Cross"
 
         return {
             "ADX": current_adx,
@@ -138,61 +197,45 @@ class QuantEngine:
         }
 
     def calculate_strategy(self, ticker, strategy_name, params):
-        """计算策略指标"""
         if ticker not in self.market_data: return None
         df = self.market_data[ticker].copy().sort_index()
-        
-        # 计算 ADX 用于过滤
         try:
             adx_df = ta.adx(df['High'], df['Low'], df['Close'], length=14)
             df = pd.concat([df, adx_df], axis=1)
-        except:
-            df['ADX_14'] = 0
+        except: df['ADX_14'] = 0
 
         try:
             df['Signal'] = 0 
-
-            # --- SMA Cross (顺势) ---
             if strategy_name == "SMA Cross":
                 s = params.get('short', 10); l = params.get('long', 50)
                 df['SMA_S'] = ta.sma(df['Close'], length=s)
                 df['SMA_L'] = ta.sma(df['Close'], length=l)
-                
                 prev_s = df['SMA_S'].shift(1); prev_l = df['SMA_L'].shift(1)
                 curr_s = df['SMA_S']; curr_l = df['SMA_L']
-                
                 golden_cross = (prev_s < prev_l) & (curr_s > curr_l)
                 death_cross = (prev_s > prev_l) & (curr_s < curr_l)
-                strong_trend = df['ADX_14'] > 20 # 必须有趋势
-                
+                strong_trend = df['ADX_14'] > 20
                 df.loc[golden_cross & strong_trend, 'Signal'] = 1
                 df.loc[death_cross & strong_trend, 'Signal'] = -1
 
-            # --- SMA Reversal (反向/逆势) ---
             elif strategy_name == "SMA Reversal":
                 s = params.get('short', 10); l = params.get('long', 50)
                 df['SMA_S'] = ta.sma(df['Close'], length=s)
                 df['SMA_L'] = ta.sma(df['Close'], length=l)
-                
                 prev_s = df['SMA_S'].shift(1); prev_l = df['SMA_L'].shift(1)
                 curr_s = df['SMA_S']; curr_l = df['SMA_L']
-                
                 golden_cross = (prev_s < prev_l) & (curr_s > curr_l)
                 death_cross = (prev_s > prev_l) & (curr_s < curr_l)
-                
-                # 逆势策略也需要在一定波动率下才有效，或者反过来思考
-                # 这里简单逻辑：金叉卖，死叉买
-                df.loc[death_cross, 'Signal'] = 1  # 死叉抄底
-                df.loc[golden_cross, 'Signal'] = -1 # 金叉逃顶
+                strong_trend = df['ADX_14'] > 20 
+                df.loc[death_cross & strong_trend, 'Signal'] = 1
+                df.loc[golden_cross & strong_trend, 'Signal'] = -1
 
-            # --- RSI ---
             elif strategy_name == "RSI":
                 length = params.get('length', 14)
                 df['RSI'] = ta.rsi(df['Close'], length=length)
                 df.loc[df['RSI'] < 30, 'Signal'] = 1
                 df.loc[df['RSI'] > 70, 'Signal'] = -1
 
-            # --- Bollinger ---
             elif strategy_name == "Bollinger":
                 length = params.get('length', 20)
                 bb = ta.bbands(df['Close'], length=length, std=2)
@@ -201,7 +244,6 @@ class QuantEngine:
                     lower = bb.columns[0]; upper = bb.columns[2]
                     df.loc[df['Close'] < df[lower], 'Signal'] = 1
                     df.loc[df['Close'] > df[upper], 'Signal'] = -1
-
         except Exception: return None
         return df
 
@@ -218,8 +260,7 @@ class QuantEngine:
     # --- 配置管理 ---
     def load_strategy_config(self):
         if os.path.exists(self.config_file):
-            try:
-                with open(self.config_file, 'r') as f: return json.load(f)
+            try: with open(self.config_file, 'r') as f: return json.load(f)
             except: return {}
         return {}
 
