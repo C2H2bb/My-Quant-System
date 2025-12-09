@@ -14,7 +14,8 @@ def send_telegram_message(message):
         chat_id = st.secrets["CHAT_ID"]
         send_text = f'https://api.telegram.org/bot{bot_token}/sendMessage?chat_id={chat_id}&parse_mode=Markdown&text={message}'
         requests.get(send_text, timeout=3) 
-    except Exception: pass 
+    except Exception: 
+        pass 
 
 class QuantEngine:
     def __init__(self):
@@ -39,14 +40,17 @@ class QuantEngine:
                 name = str(row.get('Name', 'Unknown'))
                 exchange = str(row.get('Exchange', ''))
                 currency = str(row.get('Currency', ''))
-                try: qty = float(row.get('Quantity', 0))
-                except: qty = 0.0
+                try: 
+                    qty = float(row.get('Quantity', 0))
+                except: 
+                    qty = 0.0
                 yf_ticker = self._map_symbol(symbol, str(row.get('Exchange', '')), name, str(row.get('Currency', '')))
                 if 'nan' in yf_ticker.lower(): continue
                 portfolio_list.append({"Symbol": symbol, "YF_Ticker": yf_ticker, "Name": name})
             self.portfolio = pd.DataFrame(portfolio_list)
             return True, f"✅ 已加载 {len(self.portfolio)} 个持仓"
-        except Exception as e: return False, f"❌ 解析失败: {str(e)}"
+        except Exception as e: 
+            return False, f"❌ 解析失败: {str(e)}"
 
     def _map_symbol(self, symbol, exchange, name, currency):
         symbol_upper = symbol.upper()
@@ -277,6 +281,9 @@ class QuantEngine:
     # --- Config ---
     def load_strategy_config(self):
         if os.path.exists(self.config_file):
-            try: with open(self.config_file, 'r') as f: return json.load(f)
-            except: return {}
+            try: 
+                with open(self.config_file, 'r') as f: 
+                    return json.load(f)
+            except: 
+                return {}
         return {}
