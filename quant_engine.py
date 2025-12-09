@@ -7,22 +7,22 @@ import numpy as np
 import json
 import os
 
+# Telegram 推送函数 (保持不变)
 def send_telegram_message(message):
     try:
         bot_token = st.secrets["BOT_TOKEN"]
         chat_id = st.secrets["CHAT_ID"]
         send_text = f'https://api.telegram.org/bot{bot_token}/sendMessage?chat_id={chat_id}&parse_mode=Markdown&text={message}'
         requests.get(send_text, timeout=3) 
-    except Exception: 
-        pass 
+    except Exception: pass 
 
 class QuantEngine:
     def __init__(self):
         self.portfolio = pd.DataFrame()
-        self.market_data = {}
         self.config_file = "strategy_config.json"
-        self.strategy_map = self.load_strategy_config()
+        self.macro_cache = {} # 缓存宏观数据
 
+    # --- 基础功能：数据加载 ---
     def load_portfolio(self, file_path_or_buffer):
         try:
             df = pd.read_csv(file_path_or_buffer)
@@ -35,275 +35,207 @@ class QuantEngine:
                 symbol = str(raw_symbol).strip()
                 if not symbol or symbol.lower() == 'nan': continue
                 name = str(row.get('Name', 'Unknown'))
-                exchange = str(row.get('Exchange', ''))
-                currency = str(row.get('Currency', ''))
-                try: 
-                    qty = float(row.get('Quantity', 0))
-                except: 
-                    qty = 0.0
-                yf_ticker = self._map_symbol(symbol, exchange, name, currency)
+                yf_ticker = self._map_symbol(symbol, str(row.get('Exchange', '')), name, str(row.get('Currency', '')))
                 if 'nan' in yf_ticker.lower(): continue
-                portfolio_list.append({"Symbol": symbol, "YF_Ticker": yf_ticker, "Quantity": qty, "Name": name})
-            if not portfolio_list: return False, "未找到有效持仓"
+                portfolio_list.append({"Symbol": symbol, "YF_Ticker": yf_ticker, "Name": name})
             self.portfolio = pd.DataFrame(portfolio_list)
             return True, f"✅ 已加载 {len(self.portfolio)} 个持仓"
-        except Exception as e: 
-            return False, f"❌ 解析失败: {str(e)}"
+        except Exception as e: return False, f"❌ 解析失败: {str(e)}"
 
     def _map_symbol(self, symbol, exchange, name, currency):
         symbol_upper = symbol.upper()
-        name_upper = name.upper()
-        if symbol_upper == 'GOLD' and 'BARRICK' not in name_upper: return 'GC=F'
+        if symbol_upper == 'GOLD' and 'BARRICK' not in name.upper(): return 'GC=F'
         if '.' in symbol_upper and ('TO' in symbol_upper or 'NE' in symbol_upper): return symbol_upper
-        is_cad = currency.upper() == 'CAD'
-        if 'CDR' in name_upper or 'NEO' in exchange or 'CBOE' in exchange: return f"{symbol_upper.replace('.', '-')}.NE"
-        if 'TSX' in exchange or 'TORONTO' in exchange.upper(): return f"{symbol_upper.replace('.', '-')}.TO"
-        if is_cad and '.' not in symbol_upper: return f"{symbol_upper}.TO"
-        crypto_list = ['BTC', 'ETH', 'SOL', 'DOGE', 'ADA', 'DOT']
+        if currency.upper() == 'CAD':
+            if 'CDR' in name.upper() or 'NEO' in exchange: return f"{symbol_upper.replace('.', '-')}.NE"
+            return f"{symbol_upper.replace('.', '-')}.TO"
+        crypto_list = ['BTC', 'ETH', 'SOL', 'DOGE', 'ADA']
         if (not exchange or exchange.lower() == 'nan') and symbol_upper in crypto_list: return f"{symbol_upper}-USD"
         return symbol_upper
 
-    def fetch_data_automatically(self):
-        if self.portfolio.empty: return "持仓为空"
-        tickers = self.portfolio['YF_Ticker'].unique().tolist()
-        valid_tickers = sorted(list(set([t for t in tickers if t and 'NAN' not in t.upper()])))
-        if not valid_tickers: return "无有效代码"
+    # --- 核心：宏观数据获取 ---
+    def fetch_macro_context(self):
+        """获取大盘环境：纳指、VIX、美债"""
         try:
-            data = yf.download(" ".join(valid_tickers), period="2y", group_by='ticker', auto_adjust=True, threads=True)
-            self.market_data = {}
-            for t in valid_tickers:
-                df = pd.DataFrame()
-                if len(valid_tickers) == 1: df = data.copy()
-                else:
-                    try: df = data[t].copy()
-                    except KeyError: continue
-                df = df.dropna(how='all')
-                if not df.empty and len(df) > 30: self.market_data[t] = df
-            return f"✅ 数据更新完成 ({len(self.market_data)}/{len(valid_tickers)})"
-        except Exception as e: return f"❌ 下载异常: {e}"
+            # 下载 QQQ (纳指), ^VXN (纳指恐慌), ^TNX (美债)
+            data = yf.download("QQQ ^VXN ^TNX", period="1y", group_by='ticker', auto_adjust=True, threads=True)
+            
+            # 处理多层索引
+            qqq = data['QQQ'].dropna() if 'QQQ' in data else pd.DataFrame()
+            vxn = data['^VXN'].dropna() if '^VXN' in data else pd.DataFrame()
+            tnx = data['^TNX'].dropna() if '^TNX' in data else pd.DataFrame()
+            
+            if qqq.empty: return None
 
-    def analyze_nasdaq_pro(self):
-        """纳指专业级全维分析"""
-        try:
-            tickers = "QQQ QQQE ^VXN ^TNX DX-Y.NYB"
-            data = yf.download(tickers, period="2y", group_by='ticker', auto_adjust=True, threads=True)
+            # 计算宏观状态
+            curr_vxn = vxn['Close'].iloc[-1] if not vxn.empty else 20
+            qqq_sma50 = ta.sma(qqq['Close'], 50).iloc[-1]
+            qqq_price = qqq['Close'].iloc[-1]
             
-            try:
-                q = data['QQQ'].dropna()
-                qe = data['QQQE'].dropna()
-                vxn = data['^VXN'].dropna()
-                tnx = data['^TNX'].dropna()
-                dxy = data['DX-Y.NYB'].dropna() if 'DX-Y.NYB' in data else pd.DataFrame()
-            except KeyError: return None
-            if q.empty: return None
-
-            current_price = q['Close'].iloc[-1]
-            sma20 = ta.sma(q['Close'], 20).iloc[-1]
-            sma50 = ta.sma(q['Close'], 50).iloc[-1]
-            sma200 = ta.sma(q['Close'], 200).iloc[-1]
-            bias_200 = (current_price - sma200) / sma200 * 100
+            market_trend = "Bull" if qqq_price > qqq_sma50 else "Bear"
+            fear_level = "High" if curr_vxn > 28 else ("Low" if curr_vxn < 18 else "Normal")
             
-            adx_df = ta.adx(q['High'], q['Low'], q['Close'], 14)
-            adx = adx_df['ADX_14'].iloc[-1] if adx_df is not None else 0
-            
-            curr_vxn = vxn['Close'].iloc[-1]
-            vxn_ma20 = ta.sma(vxn['Close'], 20).iloc[-1]
-            vxn_trend = "扩张" if curr_vxn > vxn_ma20 * 1.05 else "正常"
-            
-            ath = q['High'].max()
-            dd_current = (current_price - ath) / ath * 100
-            
-            q_pct = q['Close'].pct_change(20).iloc[-1]
-            qe_pct = qe['Close'].pct_change(20).iloc[-1]
-            breadth_health = "健康" if qe_pct >= q_pct - 0.02 else "恶化 (仅巨头拉升)"
-            
-            mfi = ta.mfi(q['High'], q['Low'], q['Close'], q['Volume'], 14).iloc[-1]
-            tnx_val = tnx['Close'].iloc[-1]
-            
-            state = "Choppy"
-            if current_price < sma200 and current_price < sma50:
-                if curr_vxn > 35: state = "Panic"
-                else: state = "Bear Market"
-            elif current_price > sma200:
-                if current_price > sma50 and current_price > sma20:
-                    if bias_200 > 20 and mfi > 80: state = "Overheated"
-                    elif adx > 25: state = "Strong Bull"
-                    else: state = "Healthy Uptrend"
-                elif current_price < sma20:
-                    if current_price > sma50: state = "Shallow Pullback"
-                    else: state = "Deep Pullback"
-                elif current_price < sma50 and current_price > sma200:
-                     state = "Repairing"
-            
-            health_score = 50
-            if current_price > sma200: health_score += 20
-            if current_price > sma50: health_score += 15
-            if current_price > sma20: health_score += 10
-            if mfi > 50: health_score += 5
-            if breadth_health == "健康": health_score += 10
-            if curr_vxn < 20: health_score += 10
-            elif curr_vxn > 30: health_score -= 15
-            if bias_200 > 20: health_score -= 10
-            health_score = max(0, min(100, health_score))
-            
-            trend_dir = "震荡"
-            if current_price > sma50: trend_dir = "上升"
-            elif current_price < sma50: trend_dir = "下降"
-            
-            trend_str = "弱"
-            if adx > 25: trend_str = "强"
-            elif adx > 40: trend_str = "极强"
-
-            rsi = ta.rsi(q['Close'], 14).iloc[-1]
-            prob_short_drop = 20
-            if rsi > 70: prob_short_drop += 30
-            if curr_vxn > 25: prob_short_drop += 20
-            
-            prob_med_crash = 10
-            if bias_200 > 20: prob_med_crash += 20
-            if breadth_health != "健康": prob_med_crash += 15
-            if tnx_val > 4.5: prob_med_crash += 15
-            if current_price < sma50: prob_med_crash += 10
-
-            signals = []
-            if curr_vxn > 25: signals.append(f"⚠️ VXN 高位 ({curr_vxn:.1f})，恐慌情绪蔓延")
-            if breadth_health != "健康": signals.append("⚠️ 市场宽度恶化，仅靠巨头支撑")
-            if bias_200 > 20: signals.append("⚠️ 年线乖离过大，长期回调风险高")
-            if tnx_val > 4.2: signals.append("⚠️ 美债收益率上行，压制估值")
-            if not signals and health_score > 70: signals.append("✅ 结构健康，适合持仓")
-            if state == "Repairing": signals.append("🛠️ 震荡修复期，多空博弈")
-
-            return {
-                "State": state,
-                "Score": health_score,
-                "Trend_Dir": trend_dir,
-                "Trend_Str": trend_str,
-                "Volatility": vxn_trend,
-                "Breadth": breadth_health,
-                "Risk_Short": min(prob_short_drop, 99),
-                "Risk_Med": min(prob_med_crash, 99),
-                "Signals": signals,
-                "Metrics": {
-                    "Price": current_price,
-                    "SMA50": sma50,
-                    "SMA200": sma200,
-                    "RSI": rsi,
-                    "ADX": adx,
-                    "VXN": curr_vxn,
-                    "TNX": tnx_val,
-                    "DD": dd_current
-                }
+            self.macro_cache = {
+                "Market_Trend": market_trend,
+                "Fear_Level": fear_level,
+                "VXN": curr_vxn,
+                "TNX": tnx['Close'].iloc[-1] if not tnx.empty else 4.0
             }
+            return self.macro_cache
         except Exception as e:
-            print(f"Pro Analysis Error: {e}")
+            print(f"Macro fetch error: {e}")
             return None
 
-    def analyze_market_regime(self, ticker):
-        if ticker not in self.market_data: return None
-        df = self.market_data[ticker].copy()
+    # =========================================================
+    # 🧠 分层权重诊断模型 (The Core Logic)
+    # =========================================================
+    def diagnose_stock(self, ticker):
+        """
+        基于 4 层优先级体系判断 15 种市场状态
+        """
+        # 1. 获取数据
         try:
-            adx_df = ta.adx(df['High'], df['Low'], df['Close'], length=14)
-            current_adx = adx_df['ADX_14'].iloc[-1] if adx_df is not None else 0
-            atr = ta.atr(df['High'], df['Low'], df['Close'], length=14).iloc[-1]
-            price = df['Close'].iloc[-1]
-            volatility_pct = (atr / price) * 100
-            days = len(df)
-            ret_1m = df['Close'].pct_change(21).iloc[-1] if days > 21 else 0
-            ret_6m = df['Close'].pct_change(126).iloc[-1] if days > 126 else 0
-            ret_1y = df['Close'].pct_change(252).iloc[-1] if days > 252 else 0
+            df = yf.download(ticker, period="1y", auto_adjust=True, progress=False)
+            if df.empty: return None
         except: return None
 
-        def get_status_desc(ret):
-            if ret >= 0.20: return "🚀 强势上涨"
-            if ret >= 0.05: return "📈 稳步上涨"
-            if ret <= -0.20: return "📉 暴风骤跌"
-            if ret <= -0.05: return "💸 轻微回撤"
-            return "🦀 横盘震荡"
+        # 2. 计算关键指标
+        close = df['Close']
+        curr_price = close.iloc[-1]
+        prev_price = close.iloc[-2]
+        day_change_pct = (curr_price - prev_price) / prev_price * 100
+        
+        # 均线
+        sma20 = ta.sma(close, 20).iloc[-1]
+        sma50 = ta.sma(close, 50).iloc[-1]
+        sma200 = ta.sma(close, 200).iloc[-1]
+        
+        # 动量与波动
+        rsi = ta.rsi(close, 14).iloc[-1]
+        adx = ta.adx(df['High'], df['Low'], close, 14)['ADX_14'].iloc[-1]
+        
+        # 成交量
+        vol = df['Volume']
+        vol_ma = ta.sma(vol, 20).iloc[-1]
+        vol_ratio = vol.iloc[-1] / vol_ma if vol_ma > 0 else 1.0
+        
+        # 宏观环境 (从缓存读取)
+        macro = self.macro_cache if self.macro_cache else {"Market_Trend": "Bull", "Fear_Level": "Normal"}
 
-        if ret_1m <= -0.15: recommendation = "SMA Reversal"
-        elif ret_1m >= 0.20: recommendation = "SMA Cross"
-        elif current_adx < 20: recommendation = "Bollinger"
-        else: recommendation = "SMA Cross"
+        # 3. 🛡️ 优先级判定树 (Decision Tree)
+        
+        # --- 第一层：最高优先级 (权重 100) ---
+        # 黑天鹅、暴跌暴涨、重大反转
+        
+        # 状态 10: 黑天鹅/重大冲击
+        if day_change_pct < -8.0:
+            return self._pack_result(10, "黑天鹅/重大事件冲击", "Tier 1", 
+                                     f"单日暴跌 {day_change_pct:.1f}%，远超正常波动范围。", 
+                                     "🔴 暂停操作，等待稳定")
+        
+        # 状态 6: 趋势彻底反转 (有效跌破年线)
+        if prev_price > sma200 and curr_price < sma200 and day_change_pct < -2:
+            return self._pack_result(6, "跌破关键指标/趋势反转", "Tier 1",
+                                     "放量跌破 200 日年线，牛熊分界线失守。",
+                                     "✂️ 立即减仓或卖出")
 
+        # 状态 5: 风险偏好增强 (暴涨启动)
+        if day_change_pct > 6.0 and vol_ratio > 1.5:
+            return self._pack_result(5, "风险偏好增强", "Tier 1",
+                                     f"单日放量大涨 {day_change_pct:.1f}%，资金抢筹迹象明显。",
+                                     "🔥 积极持有")
+
+        # --- 第二层：高优先级 (权重 70-90) ---
+        # 大盘共振、成交量异常、多周期形态
+        
+        # 状态 9: 高波动风险 (大盘恐慌)
+        if macro['Fear_Level'] == "High":
+            return self._pack_result(9, "高波动风险", "Tier 2",
+                                     f"纳指恐慌指数 (VXN) 高达 {macro['VXN']:.1f}，系统性风险高。",
+                                     "👀 观望，暂不操作")
+        
+        # 状态 8: 成交量异常 (量价背离/放量杀跌)
+        if day_change_pct < -3 and vol_ratio > 2.0:
+            return self._pack_result(8, "成交量异常/恐慌抛售", "Tier 2",
+                                     "下跌伴随 2 倍以上巨量，恐慌盘涌出。",
+                                     "⚠️ 警告/减仓")
+
+        # 状态 1: 趋势强势上涨 (多头排列 + 大盘配合)
+        if curr_price > sma20 > sma50 > sma200 and macro['Market_Trend'] == "Bull":
+            return self._pack_result(1, "趋势强势上涨", "Tier 2",
+                                     "均线完美多头排列，且大盘环境向好。",
+                                     "💪 继续持有")
+
+        # --- 第三层：中优先级 (权重 40-60) ---
+        # RSI、支撑阻力、盘整
+        
+        # 状态 7: 上涨过度/泡沫 (超买)
+        if rsi > 78:
+            return self._pack_result(7, "上涨过度/泡沫信号", "Tier 3",
+                                     f"RSI 高达 {rsi:.1f}，进入严重超买区，短线回调压力大。",
+                                     "💰 分批止盈")
+        
+        # 状态 12: 超卖情绪极端 (反弹机会)
+        if rsi < 25:
+            return self._pack_result(12, "超卖情绪极端", "Tier 3",
+                                     f"RSI 降至 {rsi:.1f}，空头情绪释放过度，随时可能反抽。",
+                                     "👀 警惕短线反转/轻仓博反弹")
+
+        # 状态 3: 关键支撑反弹 (回踩 SMA50/200)
+        dist_sma50 = abs(curr_price - sma50) / sma50
+        if dist_sma50 < 0.02 and day_change_pct > 0:
+            return self._pack_result(3, "关键支撑反弹企稳", "Tier 3",
+                                     "回踩 50 日均线附近获得支撑并收阳。",
+                                     "➕ 可小规模加仓")
+
+        # 状态 11: 盘整区间
+        if adx < 20:
+            return self._pack_result(11, "盘整区间，无趋势", "Tier 3",
+                                     f"ADX 仅为 {adx:.1f}，显示当前缺乏明确趋势。",
+                                     "⏳ 等待突破")
+
+        # --- 第四层：最低优先级 (权重 10-30) ---
+        # 短线波动、补充判断
+        
+        # 状态 2: 短暂波动 (牛市回调)
+        if curr_price < sma20 and curr_price > sma50:
+            return self._pack_result(2, "短暂波动但趋势未变", "Tier 4",
+                                     "跌破 20 日线但 50 日线趋势仍向上，属于良性回调。",
+                                     "🧘‍♂️ 不要操作/持有")
+        
+        # 状态 4: 深度回调完成 (磨底)
+        if curr_price < sma50 and curr_price > sma200 and rsi > 40:
+            return self._pack_result(4, "深度回调/尝试筑底", "Tier 4",
+                                     "位于年线上方震荡，指标低位修复中。",
+                                     "🛒 底部信号明确后买入")
+
+        # 状态 13: 关键临界点 (默认归类)
+        if curr_price < sma200:
+            return self._pack_result(14, "市场风格切换期/弱势", "Tier 4",
+                                     "运行于长期均线下方，走势偏弱。",
+                                     "👀 观望")
+        
+        # 默认
+        return self._pack_result(13, "关键支撑/阻力临界", "Tier 4",
+                                 "当前方向不明，处于多空平衡点。",
+                                 "👀 观望")
+
+    def _pack_result(self, code, name, tier, reason, action):
         return {
-            "ADX": current_adx,
-            "Volatility": volatility_pct,
-            "1M": {"Val": ret_1m, "Desc": get_status_desc(ret_1m)},
-            "6M": {"Val": ret_6m, "Desc": get_status_desc(ret_6m)},
-            "1Y": {"Val": ret_1y, "Desc": get_status_desc(ret_1y)},
-            "Recommendation": recommendation
+            "ID": code,
+            "State": name,
+            "Tier": tier,
+            "Reason": reason,
+            "Action": action
         }
 
-    def calculate_strategy(self, ticker, strategy_name, params):
-        if ticker not in self.market_data: return None
-        df = self.market_data[ticker].copy().sort_index()
+    # 用于绘图的数据获取
+    def get_chart_data(self, ticker):
         try:
-            adx_df = ta.adx(df['High'], df['Low'], df['Close'], length=14)
-            df = pd.concat([df, adx_df], axis=1)
-        except: df['ADX_14'] = 0
-        try:
-            df['Signal'] = 0 
-            if strategy_name == "SMA Cross":
-                s = params.get('short', 10); l = params.get('long', 50)
-                df['SMA_S'] = ta.sma(df['Close'], length=s)
-                df['SMA_L'] = ta.sma(df['Close'], length=l)
-                prev_s = df['SMA_S'].shift(1); prev_l = df['SMA_L'].shift(1)
-                curr_s = df['SMA_S']; curr_l = df['SMA_L']
-                golden_cross = (prev_s < prev_l) & (curr_s > curr_l)
-                death_cross = (prev_s > prev_l) & (curr_s < curr_l)
-                strong_trend = df['ADX_14'] > 20
-                df.loc[golden_cross & strong_trend, 'Signal'] = 1
-                df.loc[death_cross & strong_trend, 'Signal'] = -1
-            elif strategy_name == "SMA Reversal":
-                s = params.get('short', 10); l = params.get('long', 50)
-                df['SMA_S'] = ta.sma(df['Close'], length=s)
-                df['SMA_L'] = ta.sma(df['Close'], length=l)
-                prev_s = df['SMA_S'].shift(1); prev_l = df['SMA_L'].shift(1)
-                curr_s = df['SMA_S']; curr_l = df['SMA_L']
-                golden_cross = (prev_s < prev_l) & (curr_s > curr_l)
-                death_cross = (prev_s > prev_l) & (curr_s < curr_l)
-                strong_trend = df['ADX_14'] > 20 
-                df.loc[death_cross & strong_trend, 'Signal'] = 1
-                df.loc[golden_cross & strong_trend, 'Signal'] = -1
-            elif strategy_name == "RSI":
-                length = params.get('length', 14)
-                df['RSI'] = ta.rsi(df['Close'], length=length)
-                df.loc[df['RSI'] < 30, 'Signal'] = 1
-                df.loc[df['RSI'] > 70, 'Signal'] = -1
-            elif strategy_name == "Bollinger":
-                length = params.get('length', 20)
-                bb = ta.bbands(df['Close'], length=length, std=2)
-                if bb is not None:
-                    df = pd.concat([df, bb], axis=1)
-                    lower = bb.columns[0]; upper = bb.columns[2]
-                    df.loc[df['Close'] < df[lower], 'Signal'] = 1
-                    df.loc[df['Close'] > df[upper], 'Signal'] = -1
-        except Exception: return None
-        return df
-
-    def get_signal_status(self, df):
-        if df is None or 'Signal' not in df.columns: return "No Data"
-        last_signals = df[df['Signal'] != 0]
-        if last_signals.empty: return "⚪ 无信号"
-        last_sig = last_signals['Signal'].iloc[-1]
-        last_date = last_signals.index[-1].strftime('%Y-%m-%d')
-        if last_sig == 1: return f"🟢 买入 ({last_date})"
-        elif last_sig == -1: return f"🔴 卖出 ({last_date})"
-        return "⚪ 观望"
-
-    def load_strategy_config(self):
-        if os.path.exists(self.config_file):
-            try: 
-                with open(self.config_file, 'r') as f: 
-                    return json.load(f)
-            except: 
-                return {}
-        return {}
-
-    def save_strategy_config(self, ticker, strategy):
-        self.strategy_map[ticker] = strategy
-        with open(self.config_file, 'w') as f: 
-            json.dump(self.strategy_map, f)
-            
-    def get_active_strategy(self, ticker, default_strategy):
-        return self.strategy_map.get(ticker, default_strategy)
+            df = yf.download(ticker, period="1y", auto_adjust=True, progress=False)
+            if df.empty: return None
+            df['SMA20'] = ta.sma(df['Close'], 20)
+            df['SMA50'] = ta.sma(df['Close'], 50)
+            df['SMA200'] = ta.sma(df['Close'], 200)
+            return df
+        except: return None
