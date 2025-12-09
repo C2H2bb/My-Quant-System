@@ -4,193 +4,160 @@ import plotly.graph_objects as go
 import os
 from quant_engine import QuantEngine
 
-st.set_page_config(page_title="智能量化系统 Pro", layout="wide", page_icon="🧠")
+st.set_page_config(page_title="宏观投研决策系统", layout="wide", page_icon="⚖️")
 
-engine = QuantEngine()
+# 初始化
+if 'engine' not in st.session_state:
+    st.session_state.engine = QuantEngine()
+engine = st.session_state.engine
 
-st.sidebar.header("📂 数据中心")
+# --- 侧边栏 ---
+st.sidebar.title("⚖️ 宏观决策系统")
+st.sidebar.info("基于分层权重模型 (Tiered Priority Model)")
+
 default_file = "holdings.csv"
 csv_source = None
 
 if os.path.exists(default_file):
-    st.sidebar.success(f"本地数据: {default_file}")
+    st.sidebar.success(f"已连接数据: {default_file}")
     csv_source = default_file
 else:
-    uploaded = st.sidebar.file_uploader("上传 CSV", type=['csv'])
+    uploaded = st.sidebar.file_uploader("上传持仓 CSV", type=['csv'])
     if uploaded: csv_source = uploaded
 
 if not csv_source:
-    st.info("👈 请上传数据")
+    st.info("👈 请先上传持仓文件")
     st.stop()
 
+# 加载数据 & 宏观环境
 engine.load_portfolio(csv_source)
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def get_market_data_cached(_engine_trigger):
-    return engine.fetch_data_automatically()
+if 'macro_done' not in st.session_state:
+    with st.spinner("正在扫描全球宏观环境 (QQQ, VIX, TNX)..."):
+        engine.fetch_macro_context()
+        st.session_state.macro_done = True
 
-with st.spinner("正在进行全维市场扫描..."):
-    status = engine.fetch_data_automatically()
+macro = engine.macro_cache
+if not macro:
+    st.error("网络错误：无法连接行情服务器")
+    st.stop()
 
-# ==========================================
-# 🛡️ 纳指专业级市场状态分析
-# ==========================================
-with st.expander("🛡️ 纳斯达克全维战态感知 (Nasdaq Pro Analysis)", expanded=True):
-    nasdaq_pro = engine.analyze_nasdaq_pro()
+# --- 顶栏：宏观罗盘 ---
+with st.expander("🌍 全球宏观罗盘 (Macro Context)", expanded=True):
+    c1, c2, c3 = st.columns(3)
     
-    if nasdaq_pro:
-        state = nasdaq_pro['State']
-        score = nasdaq_pro['Score']
-        
-        state_colors = {
-            "Strong Bull": "#d4edda", "Healthy Uptrend": "#d1e7dd",
-            "Overheated": "#fff3cd", "Shallow Pullback": "#cfe2ff",
-            "Deep Pullback": "#ffe69c", "Repairing": "#e2e3e5",
-            "Choppy": "#f8f9fa", "Bear Market": "#f8d7da",
-            "Panic": "#f5c6cb"
-        }
-        bg = state_colors.get(state, "#f8f9fa")
-        
-        st.markdown(f"""
-        <div style="background-color: {bg}; padding: 20px; border-radius: 12px; border-left: 8px solid #666;">
-            <h2 style="margin:0; color: #333;">{state} <span style="font-size: 16px; color: #555;">(健康评分: {score}/100)</span></h2>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        st.write("")
+    # 纳指趋势
+    trend_icon = "🟢" if macro['Market_Trend'] == "Bull" else "🔴"
+    c1.metric("纳斯达克趋势", f"{trend_icon} {macro['Market_Trend']}", "SMA50 判定")
+    
+    # 恐慌指数
+    vxn_val = macro['VXN']
+    vxn_color = "normal"
+    if vxn_val > 28: vxn_color = "inverse" # 红
+    c2.metric("恐慌指数 (VXN)", f"{vxn_val:.2f}", help=">28 为高风险区")
+    
+    # 利率压力
+    tnx_val = macro['TNX']
+    c3.metric("10年美债收益率", f"{tnx_val:.2f}%", "无风险利率基准")
 
-        c1, c2, c3, c4 = st.columns(4)
-        m = nasdaq_pro['Metrics']
+# --- 主界面：个股诊断 ---
+st.subheader("🔍 持仓深度诊断")
+
+# 提取持仓列表
+tickers = engine.portfolio['YF_Ticker'].unique()
+symbols = engine.portfolio['Symbol'].unique()
+display_map = {row['Symbol']: row['YF_Ticker'] for idx, row in engine.portfolio.iterrows()}
+
+selected_symbol = st.selectbox("选择要诊断的资产:", list(display_map.keys()))
+selected_ticker = display_map[selected_symbol]
+
+if st.button("开始诊断"):
+    with st.spinner(f"正在通过 4 层权重模型分析 {selected_symbol}..."):
+        result = engine.diagnose_stock(selected_ticker)
         
-        with c1:
-            st.caption("📈 趋势 (Trend)")
-            st.metric("方向 / 强度", f"{nasdaq_pro['Trend_Dir']} / {nasdaq_pro['Trend_Str']}")
-            st.metric("ADX 强度", f"{m['ADX']:.1f}", help=">25 为强趋势")
-        
-        with c2:
-            st.caption("🌊 波动 (Risk)")
-            st.metric("波动率状态", nasdaq_pro['Volatility'])
-            st.metric("恐慌指数 VXN", f"{m['VXN']:.1f}", delta=None, help="纳指波动率")
+        if result:
+            # --- 结果展示区 ---
+            st.divider()
             
-        with c3:
-            st.caption("🏗️ 结构 (Health)")
-            st.metric("市场宽度", nasdaq_pro['Breadth'], help="对比等权指数与加权指数")
-            st.metric("资金流 RSI", f"{m['RSI']:.1f}")
+            # 1. 状态大标题
+            state_id = result['ID']
+            # 颜色映射
+            if state_id <= 5: theme_color = "#d1e7dd" # Green (正向)
+            elif state_id <= 10: theme_color = "#f8d7da" # Red (负向)
+            else: theme_color = "#fff3cd" # Yellow (中性)
             
-        with c4:
-            st.caption("⚠️ 风险预测 (Prob)")
-            st.metric("短期回撤概率", f"{nasdaq_pro['Risk_Short']}%", help="1-5天风险")
-            st.metric("中期崩盘概率", f"{nasdaq_pro['Risk_Med']}%", help="1-4周风险")
+            st.markdown(f"""
+            <div style="background-color: {theme_color}; padding: 20px; border-radius: 10px; border-left: 10px solid #666; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                <h4 style="margin:0; color: #555;">当前状态 ({result['Tier']})</h4>
+                <h1 style="margin:0; color: #333;">{result['State']}</h1>
+                <p style="margin-top: 10px; font-size: 18px;"><b>诊断理由：</b>{result['Reason']}</p>
+            </div>
+            """, unsafe_allow_html=True)
             
-        if nasdaq_pro['Signals']:
-            st.markdown("---")
-            st.caption("📢 **关键情报 (Key Signals)**")
-            for sig in nasdaq_pro['Signals']:
-                st.write(sig)
+            st.write("")
+            
+            # 2. 最终建议与图表
+            col_advice, col_chart = st.columns([1, 2])
+            
+            with col_advice:
+                st.markdown("### 📢 操作建议")
+                action = result['Action']
                 
-    else:
-        st.warning("无法获取纳指全维数据，请检查网络或清除缓存重试。")
+                # 建议样式
+                btn_type = "secondary"
+                if "买" in action or "持有" in action: btn_type = "primary"
+                if "卖" in action or "减仓" in action: btn_type = "primary" # 红色实际上要自定义，但在streamlit里用primary突出
+                
+                st.button(action, type=btn_type, use_container_width=True)
+                
+                st.markdown("""
+                ---
+                **权重层级说明：**
+                * **Tier 1 (黑天鹅/事件)**：一票否决权
+                * **Tier 2 (大盘/量能)**：决定主要方向
+                * **Tier 3 (指标/形态)**：辅助判断
+                * **Tier 4 (日内波动)**：仅供参考
+                """)
 
-default_params = {
-    'SMA Cross': {'short': 10, 'long': 50},
-    'SMA Reversal': {'short': 10, 'long': 50},
-    'RSI': {'length': 14},
-    'Bollinger': {'length': 20}
-}
+            with col_chart:
+                df_chart = engine.get_chart_data(selected_ticker)
+                if df_chart is not None:
+                    fig = go.Figure()
+                    # K线
+                    fig.add_trace(go.Candlestick(
+                        x=df_chart.index, open=df_chart['Open'], high=df_chart['High'],
+                        low=df_chart['Low'], close=df_chart['Close'], name='K线'
+                    ))
+                    # 均线系统
+                    fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SMA50'], line=dict(color='orange', width=1.5), name='SMA 50 (生命线)'))
+                    fig.add_trace(go.Scatter(x=df_chart.index, y=df_chart['SMA200'], line=dict(color='blue', width=2), name='SMA 200 (牛熊线)'))
+                    
+                    fig.update_layout(
+                        title=f"{selected_symbol} 趋势全景图",
+                        height=450,
+                        margin=dict(l=20, r=20, t=40, b=20),
+                        xaxis_rangeslider_visible=False
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.error("数据不足，无法生成诊断报告。")
 
-tab1, tab2, tab3 = st.tabs(["📊 投资组合", "🧠 个股诊断", "⚙️ 设置"])
-
-with tab1:
-    valid_tickers = [t for t in engine.portfolio['YF_Ticker'].unique() if t in engine.market_data]
-    global_strategy = st.sidebar.selectbox("备用策略", ["SMA Cross", "SMA Reversal", "RSI", "Bollinger"], index=0)
-    
-    dashboard_data = []
-    for ticker in valid_tickers:
-        active_strat = engine.get_active_strategy(ticker, global_strategy)
-        df_res = engine.calculate_strategy(ticker, active_strat, default_params.get(active_strat, {}))
-        signal_status = engine.get_signal_status(df_res)
-        price = df_res['Close'].iloc[-1] if df_res is not None else 0
+# --- 底部：批量扫描 ---
+st.markdown("---")
+with st.expander("🚀 批量扫描持仓风险 (Batch Scan)"):
+    if st.button("扫描所有持仓"):
+        report_data = []
+        prog = st.progress(0)
         
-        regime = engine.analyze_market_regime(ticker)
-        health = "✅"
-        if regime and regime['Recommendation'] != active_strat:
-             if "SMA" in active_strat and "SMA" in regime['Recommendation'] and active_strat != regime['Recommendation']:
-                 health = f"⚠️ 建议: {regime['Recommendation']}"
-             elif "Bollinger" in regime['Recommendation'] and "SMA" in active_strat:
-                 health = "⚠️ 建议: Bollinger"
-
-        row_info = engine.portfolio[engine.portfolio['YF_Ticker'] == ticker].iloc[0]
-        dashboard_data.append({
-            "代码": row_info['Symbol'],
-            "价格": f"${price:.2f}",
-            "模型": active_strat,
-            "信号": signal_status,
-            "健康度": health,
-            "YF": ticker
-        })
-    
-    df_dash = pd.DataFrame(dashboard_data)
-    def style_dashboard(val):
-        if "BUY" in str(val): return 'color: green; font-weight: bold'
-        if "SELL" in str(val): return 'color: red; font-weight: bold'
-        if "⚠️" in str(val): return 'color: orange; font-weight: bold'
-        return ''
-
-    st.dataframe(df_dash.style.map(style_dashboard), use_container_width=True, column_config={"YF": None})
-    
-    if st.button("🚀 推送信号"):
-        count = 0
-        for idx, item in enumerate(dashboard_data):
-            if "BUY" in item['信号'] or "SELL" in item['信号']:
-                from quant_engine import send_telegram_message
-                send_telegram_message(f"🚨 *{item['信号']}*\n{item['代码']}")
-                count += 1
-        if count > 0: st.success(f"已推 {count} 条")
-        else: st.info("无信号")
-
-with tab2:
-    c_sel, c_det = st.columns([1, 3])
-    with c_sel:
-        sel_asset = st.radio("资产", [d['代码'] for d in dashboard_data])
-        sel_yf = df_dash[df_dash['代码'] == sel_asset]['YF'].iloc[0]
-    with c_det:
-        if sel_yf:
-            reg = engine.analyze_market_regime(sel_yf)
-            if reg:
-                st.markdown(f"### {sel_asset} 分析")
-                c1, c2, c3 = st.columns(3)
-                c1.metric("1月", reg['1M']['Desc'], f"{reg['1M']['Val']*100:.1f}%")
-                c2.metric("半年", reg['6M']['Desc'], f"{reg['6M']['Val']*100:.1f}%")
-                c3.metric("1年", reg['1Y']['Desc'], f"{reg['1Y']['Val']*100:.1f}%")
-                st.info(f"AI 建议: **{reg['Recommendation']}** (ADX: {reg['ADX']:.1f})")
-                
-                st.divider()
-                col_s, col_b = st.columns([2,1])
-                with col_s:
-                    try: idx = ["SMA Cross", "SMA Reversal", "RSI", "Bollinger"].index(reg['Recommendation'])
-                    except: idx = 0
-                    p_strat = st.selectbox("模型预览", ["SMA Cross", "SMA Reversal", "RSI", "Bollinger"], index=idx)
-                with col_b:
-                    st.write("")
-                    st.write("")
-                    if st.button(f"🔒 锁定 {p_strat}"):
-                        engine.save_strategy_config(sel_yf, p_strat)
-                        st.rerun()
-
-                df_c = engine.calculate_strategy(sel_yf, p_strat, default_params.get(p_strat, {}))
-                fig = go.Figure()
-                fig.add_trace(go.Candlestick(x=df_c.index, open=df_c['Open'], high=df_c['High'], low=df_c['Low'], close=df_c['Close'], name='K'))
-                if "SMA" in p_strat:
-                    fig.add_trace(go.Scatter(x=df_c.index, y=df_c['SMA_S'], line=dict(color='orange'), name='S'))
-                    fig.add_trace(go.Scatter(x=df_c.index, y=df_c['SMA_L'], line=dict(color='blue'), name='L'))
-                
-                bs = df_c[df_c['Signal']==1]; ss = df_c[df_c['Signal']==-1]
-                fig.add_trace(go.Scatter(x=bs.index, y=bs['Close'], mode='markers', marker=dict(symbol='triangle-up', size=10, color='green'), name='B'))
-                fig.add_trace(go.Scatter(x=ss.index, y=ss['Close'], mode='markers', marker=dict(symbol='triangle-down', size=10, color='red'), name='S'))
-                fig.update_layout(height=400, margin=dict(l=10,r=10,t=10,b=10))
-                st.plotly_chart(fig, use_container_width=True)
-
-with tab3:
-    if st.button("🧹 清除缓存"):
-        st.cache_data.clear()
-        st.success("OK")
+        for i, row in engine.portfolio.iterrows():
+            res = engine.diagnose_stock(row['YF_Ticker'])
+            if res:
+                report_data.append({
+                    "代码": row['Symbol'],
+                    "状态": res['State'],
+                    "层级": res['Tier'],
+                    "建议": res['Action']
+                })
+            prog.progress((i + 1) / len(engine.portfolio))
+            
+        st.dataframe(pd.DataFrame(report_data), use_container_width=True)
